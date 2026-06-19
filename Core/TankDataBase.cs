@@ -14,15 +14,13 @@ namespace SprocketMultiplayer.Core {
                 "My Games/Sprocket/Factions/AllowedVehicles/Blueprints/Vehicles"
             );
 
-            string bpDir = basePath;
-            string imgDir = Path.Combine(basePath, "Profiles");
+            if (!Directory.Exists(basePath)) return list;
 
-            if (!Directory.Exists(bpDir)) return list;
-
-            foreach (string bp in Directory.GetFiles(bpDir, "*.blueprint", SearchOption.AllDirectories))
+            foreach (string bp in Directory.GetFiles(basePath, "*.blueprint", SearchOption.AllDirectories))
             {
                 string name = Path.GetFileNameWithoutExtension(bp);
-                string png = Path.Combine(imgDir, name + ".png");
+                string bpDir = Path.GetDirectoryName(bp) ?? basePath;
+                string png = Path.Combine(bpDir, "Profiles", name + ".png");
 
                 list.Add(new TankInfo
                 {

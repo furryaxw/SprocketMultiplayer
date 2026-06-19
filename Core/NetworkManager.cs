@@ -92,14 +92,14 @@ namespace SprocketMultiplayer
             }
         }
 
-        public void ConnectToHost(string ip, int port)
+        public bool ConnectToHost(string ip, int port)
         {
             try
             {
                 if (IsHost || IsClient)
                 {
                     MelonLogger.Msg("[Network] Already in multiplayer mode.");
-                    return;
+                    return IsClient;
                 }
 
                 cancellation = new CancellationTokenSource();
@@ -117,11 +117,13 @@ namespace SprocketMultiplayer
                 MelonLogger.Msg($"[Network] Connected to host at {ip}:{port}.");
                 SendEnvelope("JOIN", LocalNickname);
                 _ = ReceiveLoopAsync(client, stream, cancellation.Token);
+                return true;
             }
             catch (Exception ex)
             {
                 MelonLogger.Error($"[Network] Failed to connect to {ip}:{port}: {ex.Message}");
                 Shutdown();
+                return false;
             }
         }
 

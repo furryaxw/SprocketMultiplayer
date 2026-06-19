@@ -23,6 +23,7 @@ namespace SprocketMultiplayer.UI
         private static TextMeshProUGUI previewNameText;
         private static Image previewImage;
         private static TMP_InputField nameInput;
+        private static readonly List<GameObject> tankButtonObjects = new List<GameObject>();
 
         private static object mapMonitorCoroutine;
         private static string lastTankName = "None";
@@ -170,7 +171,11 @@ namespace SprocketMultiplayer.UI
 
         private static void OnJoinConfirmClicked(string ip)
         {
-            LobbyManager.Instance.JoinHost(GetCurrentPlayerName(), ip, DefaultPort);
+            if (!LobbyManager.Instance.JoinHost(GetCurrentPlayerName(), ip, DefaultPort))
+            {
+                MelonLogger.Warning("[Multiplayer] Connection failed.");
+                return;
+            }
 
             if (connectPanelObj != null)
                 connectPanelObj.SetActive(false);
@@ -252,19 +257,32 @@ namespace SprocketMultiplayer.UI
 
                 CreateTextTMP(lobbyPanelObj.transform, "Title", "MULTIPLAYER ROSTER", new Vector2(0, 300), 40, TextAlignmentOptions.Center);
 
-                GameObject listBgObj = new GameObject("ListBg");
-                listBgObj.transform.SetParent(lobbyPanelObj.transform, false);
+                GameObject tankListObj = new GameObject("TankListBg");
+                tankListObj.transform.SetParent(lobbyPanelObj.transform, false);
 
-                RectTransform listBgRect = listBgObj.AddComponent<RectTransform>();
-                listBgRect.anchoredPosition = new Vector2(-200, 50);
-                listBgRect.sizeDelta = new Vector2(500, 400);
+                RectTransform tankListRect = tankListObj.AddComponent<RectTransform>();
+                tankListRect.anchoredPosition = new Vector2(-260, -10);
+                tankListRect.sizeDelta = new Vector2(520, 520);
 
-                Image listImg = listBgObj.AddComponent<Image>();
-                listImg.color = new Color(0.05f, 0.05f, 0.05f, 0.9f);
-                listBgObj.AddComponent<Outline>().effectColor = Color.black;
+                Image tankListImg = tankListObj.AddComponent<Image>();
+                tankListImg.color = new Color(0.05f, 0.05f, 0.05f, 0.9f);
+                tankListObj.AddComponent<Outline>().effectColor = Color.black;
 
-                rosterText = CreateTextTMP(listBgObj.transform, "RosterText", "Loading...", new Vector2(0, 0), 24, TextAlignmentOptions.TopLeft);
-                rosterText.rectTransform.sizeDelta = new Vector2(460, 360);
+                CreateTankGrid(tankListObj.transform);
+
+                GameObject rosterObj = new GameObject("RosterBg");
+                rosterObj.transform.SetParent(lobbyPanelObj.transform, false);
+
+                RectTransform rosterRect = rosterObj.AddComponent<RectTransform>();
+                rosterRect.anchoredPosition = new Vector2(300, 190);
+                rosterRect.sizeDelta = new Vector2(250, 145);
+
+                Image rosterImg = rosterObj.AddComponent<Image>();
+                rosterImg.color = new Color(0.05f, 0.05f, 0.05f, 0.9f);
+                rosterObj.AddComponent<Outline>().effectColor = Color.black;
+
+                rosterText = CreateTextTMP(rosterObj.transform, "RosterText", "Loading...", new Vector2(0, 0), 16, TextAlignmentOptions.TopLeft);
+                rosterText.rectTransform.sizeDelta = new Vector2(220, 115);
 
                 GameObject previewObj = new GameObject("TankPreview");
                 previewObj.transform.SetParent(lobbyPanelObj.transform, false);
@@ -272,7 +290,7 @@ namespace SprocketMultiplayer.UI
                 RectTransform previewRect = previewObj.AddComponent<RectTransform>();
                 previewRect.anchorMin = new Vector2(0.5f, 0.5f);
                 previewRect.anchorMax = new Vector2(0.5f, 0.5f);
-                previewRect.anchoredPosition = new Vector2(300, 50);
+                previewRect.anchoredPosition = new Vector2(300, 25);
                 previewRect.sizeDelta = new Vector2(250, 140);
 
                 Image prevBgImg = previewObj.AddComponent<Image>();
@@ -289,48 +307,123 @@ namespace SprocketMultiplayer.UI
                 previewImage = imgObj.AddComponent<Image>();
                 previewImage.preserveAspect = true;
 
-                previewNameText = CreateTextTMP(lobbyPanelObj.transform, "PreviewName", "No Tank Selected", new Vector2(300, -40), 22, TextAlignmentOptions.Center);
+                previewNameText = CreateTextTMP(lobbyPanelObj.transform, "PreviewName", "No Tank Selected", new Vector2(300, -65), 22, TextAlignmentOptions.Center);
                 previewNameText.rectTransform.sizeDelta = new Vector2(250, 40);
                 previewNameText.enableWordWrapping = false;
                 previewNameText.overflowMode = TextOverflowModes.Ellipsis;
 
-                CreateTankPicker(lobbyPanelObj.transform);
-
                 string btnTxt = NetworkManager.Instance != null && NetworkManager.Instance.IsHost ? "START MATCH" : "READY";
-                GameObject actionBtn = CreateNativeStyleButton(lobbyPanelObj.transform, "Btn_Action", btnTxt, new Vector2(300, -110), OnActionClicked);
+                GameObject actionBtn = CreateNativeStyleButton(lobbyPanelObj.transform, "Btn_Action", btnTxt, new Vector2(300, -135), OnActionClicked);
                 actionBtnText = actionBtn.GetComponentInChildren<TextMeshProUGUI>();
 
-                CreateNativeStyleButton(lobbyPanelObj.transform, "Btn_Disconnect", "DISCONNECT", new Vector2(300, -210), OnDisconnectClicked);
+                CreateNativeStyleButton(lobbyPanelObj.transform, "Btn_Disconnect", "DISCONNECT", new Vector2(300, -220), OnDisconnectClicked);
             }
 
             lobbyPanelObj.SetActive(true);
             UpdateTankPreview();
         }
 
-        private static void CreateTankPicker(Transform parent)
+        private static void CreateTankGrid(Transform parent)
         {
-            GameObject pickerObj = new GameObject("TankPicker");
-            pickerObj.transform.SetParent(parent, false);
+            tankButtonObjects.Clear();
 
-            RectTransform rect = pickerObj.AddComponent<RectTransform>();
+            const int columns = 2;
+            const int rows = 10;
+            const float cellWidth = 240f;
+            const float cellHeight = 44f;
+            const float gapX = 16f;
+            const float gapY = 4f;
+            float startX = -((columns - 1) * (cellWidth + gapX)) / 2f;
+            float startY = ((rows - 1) * (cellHeight + gapY)) / 2f;
+
+            CreateTextTMP(parent, "TankListTitle", "SELECT TANK", new Vector2(0, 245), 20, TextAlignmentOptions.Center);
+
+            if (tanks.Count == 0)
+            {
+                TextMeshProUGUI emptyText = CreateTextTMP(parent, "TankListEmpty", "No blueprint files found.", new Vector2(0, 0), 18, TextAlignmentOptions.Center);
+                emptyText.rectTransform.sizeDelta = new Vector2(460, 80);
+                return;
+            }
+
+            int max = Math.Min(tanks.Count, columns * rows);
+            for (int i = 0; i < max; i++)
+            {
+                TankInfo tank = tanks[i];
+                TankInfo captured = tank;
+                int row = i / columns;
+                int column = i % columns;
+                Vector2 pos = new Vector2(startX + column * (cellWidth + gapX), startY - row * (cellHeight + gapY));
+                tankButtonObjects.Add(CreateTankButton(parent, "Tank_" + i, tank, pos, new Vector2(cellWidth, cellHeight), () => SelectTank(captured)));
+            }
+        }
+
+        private static GameObject CreateTankButton(Transform parent, string name, TankInfo tank, Vector2 pos, Vector2 size, Action onClick)
+        {
+            GameObject obj = new GameObject(name);
+            obj.transform.SetParent(parent, false);
+
+            RectTransform rect = obj.AddComponent<RectTransform>();
             rect.anchorMin = new Vector2(0.5f, 0.5f);
             rect.anchorMax = new Vector2(0.5f, 0.5f);
-            rect.anchoredPosition = new Vector2(300, -300);
-            rect.sizeDelta = new Vector2(280, 150);
+            rect.anchoredPosition = pos;
+            rect.sizeDelta = size;
 
-            Image bgImg = pickerObj.AddComponent<Image>();
-            bgImg.color = new Color(0.05f, 0.05f, 0.05f, 0.9f);
-            pickerObj.AddComponent<Outline>().effectColor = Color.black;
+            Image img = obj.AddComponent<Image>();
+            img.color = new Color(0.16f, 0.16f, 0.16f, 1f);
 
-            CreateTextTMP(pickerObj.transform, "TankPickerTitle", "TANKS", new Vector2(0, 50), 20, TextAlignmentOptions.Center);
+            Button btn = obj.AddComponent<Button>();
+            ColorBlock cb = btn.colors;
+            cb.normalColor = new Color(0.16f, 0.16f, 0.16f, 1f);
+            cb.highlightedColor = new Color(0.28f, 0.28f, 0.28f, 1f);
+            cb.pressedColor = new Color(0.1f, 0.1f, 0.1f, 1f);
+            cb.selectedColor = cb.normalColor;
+            cb.colorMultiplier = 1f;
+            cb.fadeDuration = 0.1f;
+            btn.colors = cb;
+            btn.onClick.AddListener((UnityAction)(() => onClick?.Invoke()));
 
-            int y = 5;
-            foreach (TankInfo tank in tanks.Take(3))
+            obj.AddComponent<Outline>().effectColor = new Color(0f, 0f, 0f, 0.8f);
+
+            GameObject iconObj = new GameObject("Icon");
+            iconObj.transform.SetParent(obj.transform, false);
+
+            RectTransform iconRect = iconObj.AddComponent<RectTransform>();
+            iconRect.anchorMin = new Vector2(0, 0.5f);
+            iconRect.anchorMax = new Vector2(0, 0.5f);
+            iconRect.anchoredPosition = new Vector2(24, 0);
+            iconRect.sizeDelta = new Vector2(36, 36);
+
+            Image iconImg = iconObj.AddComponent<Image>();
+            iconImg.preserveAspect = true;
+            Sprite sprite = LoadSpriteFromFile(tank.ImagePath);
+            if (sprite != null)
             {
-                TankInfo captured = tank;
-                CreateNativeStyleButton(pickerObj.transform, "Tank_" + tank.Name, tank.Name, new Vector2(0, y), () => SelectTank(captured));
-                y -= 48;
+                iconImg.sprite = sprite;
+                iconImg.color = Color.white;
             }
+            else
+            {
+                iconImg.color = new Color(0, 0, 0, 0);
+            }
+
+            GameObject textObj = new GameObject("Txt");
+            textObj.transform.SetParent(obj.transform, false);
+
+            RectTransform textRect = textObj.AddComponent<RectTransform>();
+            textRect.anchorMin = Vector2.zero;
+            textRect.anchorMax = Vector2.one;
+            textRect.offsetMin = new Vector2(48, 0);
+            textRect.offsetMax = new Vector2(-8, 0);
+
+            TextMeshProUGUI tmp = textObj.AddComponent<TextMeshProUGUI>();
+            tmp.text = tank.Name;
+            tmp.fontSize = 15;
+            tmp.color = Color.white;
+            tmp.alignment = TextAlignmentOptions.MidlineLeft;
+            tmp.enableWordWrapping = false;
+            tmp.overflowMode = TextOverflowModes.Ellipsis;
+
+            return obj;
         }
 
         private static void SelectTank(TankInfo tank)
@@ -537,6 +630,7 @@ namespace SprocketMultiplayer.UI
         private static readonly string[] PathsToHide =
         {
             "Root/Canvas/Content/Roster",
+            "Root/Canvas/Content/Units",
             "Root/Canvas/Content/Unit config",
             "Root/Canvas/Content/Team config",
             "Root/Canvas/Content/Teams",
@@ -567,6 +661,7 @@ namespace SprocketMultiplayer.UI
                     targetTransform.gameObject.SetActive(true);
             }
 
+            UnlockClientBattleConfigUI();
             LockWeatherControls();
         }
 
@@ -593,6 +688,19 @@ namespace SprocketMultiplayer.UI
                 cg.blocksRaycasts = false;
                 cg.alpha = 0.6f;
             }
+        }
+
+        private static void UnlockClientBattleConfigUI()
+        {
+            GameObject mapObj = GameObject.Find("Root/Canvas/Content/Map");
+            if (mapObj == null) return;
+
+            var cg = mapObj.GetComponent<CanvasGroup>();
+            if (cg == null) return;
+
+            cg.interactable = true;
+            cg.blocksRaycasts = true;
+            cg.alpha = 1f;
         }
 
         private static void LockWeatherControls()

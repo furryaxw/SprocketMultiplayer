@@ -49,10 +49,10 @@ namespace SprocketMultiplayer.Core
             CustomBattleMultiplayerUI.Refresh();
         }
 
-        public void JoinHost(string playerName, string ip, int port)
+        public bool JoinHost(string playerName, string ip, int port)
         {
             NetworkManager.Instance.LocalNickname = playerName;
-            NetworkManager.Instance.ConnectToHost(ip, port);
+            return NetworkManager.Instance.ConnectToHost(ip, port);
         }
 
         public void LeaveLobby()

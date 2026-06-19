@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using MelonLoader;
+using Newtonsoft.Json;
 using SprocketMultiplayer.UI;
 using UnityEngine.SceneManagement;
 
@@ -39,10 +39,10 @@ namespace SprocketMultiplayer.Core
 
         public void StartHost(string playerName, int port)
         {
+            NetworkManager.Instance.LocalNickname = playerName;
             NetworkManager.Instance.StartHost(port);
             if (!NetworkManager.Instance.IsHost) return;
 
-            NetworkManager.Instance.LocalNickname = playerName;
             Players.Clear();
             Players[playerName] = new LobbyPlayer { Name = playerName, Ready = true };
             BroadcastLobbyState();
@@ -53,6 +53,11 @@ namespace SprocketMultiplayer.Core
         {
             NetworkManager.Instance.LocalNickname = playerName;
             return NetworkManager.Instance.ConnectToHost(ip, port);
+        }
+
+        public bool CanAcceptPlayerName(string playerName)
+        {
+            return !string.IsNullOrWhiteSpace(playerName) && !Players.ContainsKey(playerName);
         }
 
         public void LeaveLobby()
@@ -223,20 +228,34 @@ namespace SprocketMultiplayer.Core
             SelectedMapIndex = int.TryParse(message.Get(0, "0"), out var idx) ? idx : 0;
             SelectedMap = message.Get(1, "Railway");
 
-            string payload = message.Get(2, "");
-            if (!string.IsNullOrEmpty(payload))
+            string payloadJson = message.Get(2, "");
+            if (!string.IsNullOrEmpty(payloadJson))
             {
-                foreach (string entry in payload.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                LobbyStatePayload payload = null;
+                try
                 {
-                    string[] fields = entry.Split(':');
-                    if (fields.Length < 4) continue;
-                    Players[fields[0]] = new LobbyPlayer
+                    payload = JsonConvert.DeserializeObject<LobbyStatePayload>(payloadJson);
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Error($"[Lobby] Failed to parse lobby state payload: {ex.Message}");
+                }
+
+                if (payload?.Players != null)
+                {
+                    foreach (LobbyStatePlayer player in payload.Players)
                     {
-                        Name = fields[0],
-                        Ready = fields[1] == "1",
-                        TankName = DecodeField(fields[2]),
-                        TankHash = fields[3]
-                    };
+                        if (string.IsNullOrWhiteSpace(player?.Name))
+                            continue;
+
+                        Players[player.Name] = new LobbyPlayer
+                        {
+                            Name = player.Name,
+                            Ready = player.Ready,
+                            TankName = string.IsNullOrEmpty(player.TankName) ? "None" : player.TankName,
+                            TankHash = player.TankHash ?? ""
+                        };
+                    }
                 }
             }
 
@@ -331,10 +350,22 @@ namespace SprocketMultiplayer.Core
         {
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsHost) return;
 
-            string players = string.Join(",", Players.Values.Select(p =>
-                $"{p.Name}:{(p.Ready ? "1" : "0")}:{EncodeField(p.TankName)}:{p.TankHash}"));
+            var payload = new LobbyStatePayload
+            {
+                Players = Players.Values.Select(p => new LobbyStatePlayer
+                {
+                    Name = p.Name,
+                    Ready = p.Ready,
+                    TankName = p.TankName,
+                    TankHash = p.TankHash
+                }).ToList()
+            };
 
-            NetworkManager.Instance.SendEnvelope("LOBBY_STATE", SelectedMapIndex.ToString(), SelectedMap, players);
+            NetworkManager.Instance.SendEnvelope(
+                "LOBBY_STATE",
+                SelectedMapIndex.ToString(),
+                SelectedMap,
+                JsonConvert.SerializeObject(payload));
             CustomBattleMultiplayerUI.Refresh();
         }
 
@@ -345,17 +376,17 @@ namespace SprocketMultiplayer.Core
                 Players[name] = new LobbyPlayer { Name = name };
         }
 
-        private static string EncodeField(string value)
+        private sealed class LobbyStatePayload
         {
-            if (string.IsNullOrEmpty(value)) return "";
-            return Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
+            public List<LobbyStatePlayer> Players = new List<LobbyStatePlayer>();
         }
 
-        private static string DecodeField(string value)
+        private sealed class LobbyStatePlayer
         {
-            if (string.IsNullOrEmpty(value)) return "";
-            try { return Encoding.UTF8.GetString(Convert.FromBase64String(value)); }
-            catch { return value; }
+            public string Name;
+            public bool Ready;
+            public string TankName;
+            public string TankHash;
         }
     }
 }

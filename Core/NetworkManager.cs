@@ -41,6 +41,7 @@ namespace SprocketMultiplayer
 
         private DateTime lastPingTime = DateTime.MinValue;
         private string hostNickname = "Host";
+        private TaskCompletionSource<JoinHandshakeResult> pendingJoinHandshake;
 
         public static NetworkManager Instance { get; private set; }
 
@@ -52,6 +53,7 @@ namespace SprocketMultiplayer
         public string CurrentIP { get; private set; } = "127.0.0.1";
         public string LocalNickname { get; set; }
         public int ClientCount => clients.Count;
+        public string LastConnectionError { get; private set; } = "";
 
         public NetworkManager()
         {
@@ -62,6 +64,7 @@ namespace SprocketMultiplayer
         {
             try
             {
+                LastConnectionError = "";
                 if (IsHost || server != null)
                 {
                     MelonLogger.Msg("[Network] Host already running.");
@@ -96,6 +99,7 @@ namespace SprocketMultiplayer
         {
             try
             {
+                LastConnectionError = "";
                 if (IsHost || IsClient)
                 {
                     MelonLogger.Msg("[Network] Already in multiplayer mode.");
@@ -114,14 +118,39 @@ namespace SprocketMultiplayer
                 if (string.IsNullOrEmpty(LocalNickname))
                     LocalNickname = MenuActions.GetSteamNickname();
 
+                pendingJoinHandshake = new TaskCompletionSource<JoinHandshakeResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _ = ReceiveLoopAsync(client, stream, cancellation.Token);
+
                 MelonLogger.Msg($"[Network] Connected to host at {ip}:{port}.");
                 SendEnvelope("JOIN", LocalNickname);
-                _ = ReceiveLoopAsync(client, stream, cancellation.Token);
+
+                if (!pendingJoinHandshake.Task.Wait(5000))
+                {
+                    LastConnectionError = "Host did not respond to join request.";
+                    MelonLogger.Warning($"[Network] {LastConnectionError}");
+                    Shutdown();
+                    return false;
+                }
+
+                var result = pendingJoinHandshake.Task.Result;
+                pendingJoinHandshake = null;
+
+                if (!result.Accepted)
+                {
+                    LastConnectionError = string.IsNullOrEmpty(result.Reason)
+                        ? "Join rejected by host."
+                        : result.Reason;
+                    MelonLogger.Warning($"[Network] {LastConnectionError}");
+                    Shutdown();
+                    return false;
+                }
+
                 return true;
             }
             catch (Exception ex)
             {
                 MelonLogger.Error($"[Network] Failed to connect to {ip}:{port}: {ex.Message}");
+                LastConnectionError = ex.Message;
                 Shutdown();
                 return false;
             }
@@ -196,6 +225,10 @@ namespace SprocketMultiplayer
 
         private void QueueIncomingLine(TcpClient sourceClient, string line)
         {
+            if (TryParseEnvelope(line, out var handshakeEnvelope) &&
+                TryResolveJoinHandshake(handshakeEnvelope))
+                return;
+
             mainThreadActions.Enqueue(() =>
             {
                 if (TryParseEnvelope(line, out var envelope))
@@ -234,7 +267,19 @@ namespace SprocketMultiplayer
             if (envelope.Type == "JOIN" && IsHost)
             {
                 string nick = envelope.Get(0, "Player");
+
+                if (!LobbyManager.Instance.CanAcceptPlayerName(nick))
+                {
+                    SendEnvelopeToClient(sourceClient, "JOIN_REJECT", $"Duplicate player name: {nick}");
+                    MelonLogger.Warning($"[Network] Rejected duplicate nickname: {nick}");
+                    clients.Remove(sourceClient);
+                    clientNicknames.Remove(sourceClient);
+                    SafeClose(sourceClient);
+                    return;
+                }
+
                 clientNicknames[sourceClient] = nick;
+                SendEnvelopeToClient(sourceClient, "JOIN_ACCEPT", nick);
                 MelonLogger.Msg($"[Network] Registered client nickname: {nick}");
             }
 
@@ -318,6 +363,17 @@ namespace SprocketMultiplayer
             Send(line);
         }
 
+        private void SendEnvelopeToClient(TcpClient target, string type, params string[] args)
+        {
+            var envelope = new NetworkEnvelope
+            {
+                Type = type,
+                Args = args == null ? new List<string>() : new List<string>(args)
+            };
+
+            SendToClient(target, JsonConvert.SerializeObject(envelope));
+        }
+
         private void SendToClient(TcpClient target, string msg)
         {
             if (target?.Connected != true) return;
@@ -352,6 +408,8 @@ namespace SprocketMultiplayer
         {
             try
             {
+                pendingJoinHandshake?.TrySetResult(new JoinHandshakeResult(false, LastConnectionError));
+                pendingJoinHandshake = null;
                 cancellation?.Cancel();
                 stream?.Close();
                 client?.Close();
@@ -382,6 +440,38 @@ namespace SprocketMultiplayer
         {
             try { tcp?.Close(); }
             catch { }
+        }
+
+        private bool TryResolveJoinHandshake(NetworkEnvelope envelope)
+        {
+            if (pendingJoinHandshake == null || envelope == null)
+                return false;
+
+            if (envelope.Type == "JOIN_ACCEPT")
+            {
+                pendingJoinHandshake.TrySetResult(new JoinHandshakeResult(true, ""));
+                return true;
+            }
+
+            if (envelope.Type == "JOIN_REJECT")
+            {
+                pendingJoinHandshake.TrySetResult(new JoinHandshakeResult(false, envelope.Get(0, "Join rejected by host.")));
+                return true;
+            }
+
+            return false;
+        }
+
+        private sealed class JoinHandshakeResult
+        {
+            public bool Accepted { get; }
+            public string Reason { get; }
+
+            public JoinHandshakeResult(bool accepted, string reason)
+            {
+                Accepted = accepted;
+                Reason = reason;
+            }
         }
     }
 }

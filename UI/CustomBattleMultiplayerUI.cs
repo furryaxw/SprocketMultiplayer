@@ -25,6 +25,7 @@ namespace SprocketMultiplayer.UI
         private static Image previewImage;
         private static TMP_InputField nameInput;
         private static readonly List<GameObject> tankButtonObjects = new List<GameObject>();
+        private static string playerName = CreateDefaultPlayerName();
         private static int tankPage;
 
         private static object mapMonitorCoroutine;
@@ -39,8 +40,13 @@ namespace SprocketMultiplayer.UI
 
         public static string PlayerName
         {
-            get => PlayerPrefs.GetString("SprocketMP.PlayerName", "Player" + UnityEngine.Random.Range(1000, 9999));
-            private set => PlayerPrefs.SetString("SprocketMP.PlayerName", value);
+            get => playerName;
+            private set => playerName = value;
+        }
+
+        private static string CreateDefaultPlayerName()
+        {
+            return "Player" + Guid.NewGuid().ToString("N").Substring(0, 6).ToUpperInvariant();
         }
 
         public static bool IsInjected =>
@@ -176,7 +182,10 @@ namespace SprocketMultiplayer.UI
         {
             if (!LobbyManager.Instance.JoinHost(GetCurrentPlayerName(), ip, DefaultPort))
             {
-                MelonLogger.Warning("[Multiplayer] Connection failed.");
+                string reason = NetworkManager.Instance?.LastConnectionError;
+                MelonLogger.Warning(string.IsNullOrEmpty(reason)
+                    ? "[Multiplayer] Connection failed."
+                    : $"[Multiplayer] Connection failed: {reason}");
                 return;
             }
 

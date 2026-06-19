@@ -10,10 +10,13 @@ namespace SprocketMultiplayer.UI
 
 public static class MenuActions
 {
+    private static readonly string fallbackNickname =
+        "Player" + System.Guid.NewGuid().ToString("N").Substring(0, 6).ToUpperInvariant();
+
     public static void OnMultiplayerClick() { }
 
     public static string GetSteamNickname()
     {
-        return "Player" + UnityEngine.Random.Range(1000, 9999);
+        return fallbackNickname;
     }
 }

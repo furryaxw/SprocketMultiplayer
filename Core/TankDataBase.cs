@@ -9,29 +9,55 @@ namespace SprocketMultiplayer.Core {
         public static List<TankInfo> LoadTanks() {
             List<TankInfo> list = new List<TankInfo>();
 
-            string basePath = Path.Combine(
+            string factionsPath = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                "My Games/Sprocket/Factions/AllowedVehicles/Blueprints/Vehicles"
+                "My Games", "Sprocket", "Factions"
             );
 
-            if (!Directory.Exists(basePath)) return list;
+            if (!Directory.Exists(factionsPath)) return list;
 
-            foreach (string bp in Directory.GetFiles(basePath, "*.blueprint", SearchOption.AllDirectories))
+            foreach (string factionDir in Directory.GetDirectories(factionsPath))
             {
-                string name = Path.GetFileNameWithoutExtension(bp);
-                string bpDir = Path.GetDirectoryName(bp) ?? basePath;
-                string png = Path.Combine(bpDir, "Profiles", name + ".png");
+                string vehicleDir = Path.Combine(factionDir, "Blueprints", "Vehicles");
+                if (!Directory.Exists(vehicleDir))
+                    continue;
 
-                list.Add(new TankInfo
+                foreach (string bp in Directory.GetFiles(vehicleDir, "*.blueprint", SearchOption.AllDirectories))
                 {
-                    Name = name,
-                    BlueprintPath = bp,
-                    ImagePath = File.Exists(png) ? png : null,
-                    Hash = ComputeFileHash(bp)
-                });
+                    string name = Path.GetFileNameWithoutExtension(bp);
+                    string bpDir = Path.GetDirectoryName(bp) ?? vehicleDir;
+                    string png = ResolveProfileImage(bpDir, vehicleDir, name);
+
+                    list.Add(new TankInfo
+                    {
+                        Name = name,
+                        BlueprintPath = bp,
+                        ImagePath = png,
+                        Hash = ComputeFileHash(bp)
+                    });
+                }
             }
 
+            list.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
             return list;
+        }
+
+        private static string ResolveProfileImage(string blueprintDir, string vehicleDir, string name)
+        {
+            string fileName = name + ".png";
+            string[] candidates =
+            {
+                Path.Combine(blueprintDir, "Profiles", fileName),
+                Path.Combine(vehicleDir, "Profiles", fileName)
+            };
+
+            foreach (string path in candidates)
+            {
+                if (File.Exists(path))
+                    return path;
+            }
+
+            return null;
         }
 
         public static string ReadBlueprintText(string path)

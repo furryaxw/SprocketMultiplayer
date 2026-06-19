@@ -31,9 +31,9 @@ namespace SprocketMultiplayer.Core {
         private static VehicleRegister cachedRegister;
         private static VehicleController cachedController;
 
-        private static readonly string blueprintBasePath = Path.Combine(
+        private static readonly string factionsBasePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "My Games", "Sprocket", "Factions", "AllowedVehicles", "Blueprints", "Vehicles"
+            "My Games", "Sprocket", "Factions"
         );
 
         // =====================================================================
@@ -46,23 +46,30 @@ namespace SprocketMultiplayer.Core {
 
             MelonLogger.Msg("[VehicleSpawner] Initializing...");
 
-            if (!Directory.Exists(blueprintBasePath))
+            if (!Directory.Exists(factionsBasePath))
             {
-                MelonLogger.Warning($"[VehicleSpawner] Blueprint folder not found: {blueprintBasePath}");
+                MelonLogger.Warning($"[VehicleSpawner] Factions folder not found: {factionsBasePath}");
                 isInitialized = true;
                 return;
             }
 
-            var files = Directory.GetFiles(blueprintBasePath, "*.blueprint", SearchOption.AllDirectories);
-            foreach (var file in files)
+            foreach (string factionDir in Directory.GetDirectories(factionsBasePath))
             {
-                string name = Path.GetFileNameWithoutExtension(file);
-                if (!blueprintPaths.ContainsKey(name))
+                string vehicleDir = Path.Combine(factionDir, "Blueprints", "Vehicles");
+                if (!Directory.Exists(vehicleDir))
+                    continue;
+
+                var files = Directory.GetFiles(vehicleDir, "*.blueprint", SearchOption.AllDirectories);
+                foreach (var file in files)
                 {
-                    blueprintPaths[name] = file;
-                    availableTankIds.Add(name);
-                    if (defaultTankId == null)
-                        defaultTankId = name;
+                    string name = Path.GetFileNameWithoutExtension(file);
+                    if (!blueprintPaths.ContainsKey(name))
+                    {
+                        blueprintPaths[name] = file;
+                        availableTankIds.Add(name);
+                        if (defaultTankId == null)
+                            defaultTankId = name;
+                    }
                 }
             }
 

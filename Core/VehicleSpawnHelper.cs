@@ -3,6 +3,9 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using Il2CppInterop.Runtime;
+using Il2CppInterop.Runtime.InteropTypes;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using Il2CppSprocket;
 using Il2CppSprocket.Gameplay.VehicleControl;
 using Il2CppSprocket.TechTrees;
 using UnityEngine;
@@ -30,7 +33,11 @@ namespace SprocketMultiplayer.Core {
         private static Il2CppSystem.Object cachedFactory;  // VehicleFactories singleton (IVehicleFactory)
         private static Il2CppSystem.Object cachedTechFrame;  // ITechFrame found on the spawner GO
         private static IVehicleRegister cachedRegister;
+        private static VehicleSpawner cachedSpawner;
+        private static VehicleAssemblyResources cachedAssemblyResources;
+        private static Il2CppReferenceArray<IVehicleAssemblyStageFactory> cachedStageFactories;
         private static VehicleController cachedController;
+        private static bool techTreeInitiated;
 
         private static readonly string factionsBasePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
@@ -123,40 +130,30 @@ namespace SprocketMultiplayer.Core {
                 yield break;
             }
 
-            // -- Spawn via IVehicleFactory.Create(blueprint, techFrame, flags, ct) --
-            // Per the game dev: this is the correct path.
-            // cachedFactory is the VehicleFactories singleton (IVehicleFactory).
-            // cachedTechFrame is the ITechFrame from the spawner GO (controls era unlock filter).
-            // VehicleSpawnFlags and CancellationToken are passed as default/zero values.
             var cts = new Il2CppSystem.Threading.CancellationTokenSource();
             Il2CppSystem.Object rawTask = null;
 
             try
             {
-                var il2Flags = Il2CppSystem.Reflection.BindingFlags.Public   |
-                               Il2CppSystem.Reflection.BindingFlags.NonPublic |
-                               Il2CppSystem.Reflection.BindingFlags.Instance;
-
-                foreach (var m in cachedFactory.GetIl2CppType().GetMethods(il2Flags))
+                var spawnInstance = new VehicleSpawnInstance
                 {
-                    if (m.Name != "Create" || m.GetParameters().Count != 4) continue;
+                    position = position,
+                    rotation = rotation,
+                    teamIdOverride = cachedSpawner.TeamID,
+                    groupIdOverride = cachedSpawner.GroupID
+                };
 
-                    var args = new[]
-                    {
-                        blueprint.Cast<Il2CppSystem.Object>(),
-                        cachedTechFrame,
-                        Il2CppSystem.Enum.ToObject(Il2CppType.Of<VehicleSpawnFlags>(), 0),
-                        cts.Token.Cast<Il2CppSystem.Object>()
-                    };
+                rawTask = cachedSpawner.Spawn(
+                    blueprint,
+                    spawnInstance,
+                    VehicleSpawnOptions.None,
+                    cts.Token);
 
-                    rawTask = m.Invoke(cachedFactory, args);
-                    MelonLogger.Msg($"[VehicleSpawner] Create() returned: {rawTask?.GetIl2CppType()?.FullName ?? "null"}");
-                    break;
-                }
+                MelonLogger.Msg($"[VehicleSpawner] Spawn() returned: {rawTask?.GetIl2CppType()?.FullName ?? "null"}");
             }
             catch (Exception ex)
             {
-                MelonLogger.Error($"[VehicleSpawner] Create() threw: {ex.Message}");
+                MelonLogger.Error($"[VehicleSpawner] Spawn() threw: {ex.Message}");
                 if (ex.InnerException != null)
                     MelonLogger.Error($"[VehicleSpawner]   inner: {ex.InnerException.Message}");
                 yield break;
@@ -164,7 +161,7 @@ namespace SprocketMultiplayer.Core {
 
             if (rawTask == null)
             {
-                MelonLogger.Error($"[VehicleSpawner] Could not spawn '{tankName}' — Create() returned null.");
+                MelonLogger.Error($"[VehicleSpawner] Could not spawn '{tankName}' — Spawn() returned null.");
                 yield break;
             }
 
@@ -193,14 +190,11 @@ namespace SprocketMultiplayer.Core {
 
             if (!taskDone)
             {
-                MelonLogger.Error("[VehicleSpawner] Create() task timed out.");
+                MelonLogger.Error("[VehicleSpawner] Spawn() task timed out.");
                 try { cts.Cancel(); } catch { }
                 yield break;
             }
 
-            // Extract IVehicleEditGateway from task result
-            // Per the dev: Create() returns Task<IVehicleEditGateway> directly.
-            // After getting the gateway, call EnableBehaviour() to activate the vehicle.
             IVehicleEditGateway gateway = null;
             try
             {
@@ -218,15 +212,23 @@ namespace SprocketMultiplayer.Core {
                     yield break;
                 }
 
-                // Path A: result is IVehicleBehaviour - call EnableBehaviour() to get gateway
-                var behaviour = raw.TryCast<IVehicleBehaviour>();
-                if (behaviour != null)
+                var vehicleSpawn = raw.TryCast<VehicleSpawn>();
+                if (vehicleSpawn != null)
                 {
-                    MelonLogger.Msg("[VehicleSpawner] Result is IVehicleBehaviour — calling EnableBehaviour()...");
-                    gateway = EnableBehaviour(behaviour);
+                    gateway = vehicleSpawn.Vehicle;
+                    MelonLogger.Msg($"[VehicleSpawner] VehicleSpawn received. Spawned={vehicleSpawn.Spawned}");
                 }
 
-                // Path B: result is already IVehicleEditGateway
+                if (gateway == null)
+                {
+                    var behaviour = raw.TryCast<IVehicleBehaviour>();
+                    if (behaviour != null)
+                    {
+                        MelonLogger.Msg("[VehicleSpawner] Result is IVehicleBehaviour — calling EnableBehaviour()...");
+                        gateway = EnableBehaviour(behaviour);
+                    }
+                }
+
                 if (gateway == null)
                     gateway = raw.TryCast<IVehicleEditGateway>();
 
@@ -418,11 +420,18 @@ namespace SprocketMultiplayer.Core {
         // Scene component locators
         // =====================================================================
 
-        // Ensures VehicleSource, VehicleFactories, and ITechFrame are cached.
+        // Ensures VehicleSource, VehicleSpawner, VehicleFactories, ITechFrame, and register are cached.
         // Returns true if the factory is ready to spawn.
         private static bool EnsureSceneComponents()
         {
-            if (cachedSource != null && cachedFactory != null) return true;
+            if (cachedSource != null &&
+                cachedSpawner != null &&
+                cachedFactory != null &&
+                cachedTechFrame != null &&
+                cachedRegister != null &&
+                cachedStageFactories != null &&
+                cachedStageFactories.Length > 0)
+                return true;
 
             MelonLogger.Msg("[VehicleSpawner] Searching scene for spawner components...");
 
@@ -432,6 +441,8 @@ namespace SprocketMultiplayer.Core {
                 MelonLogger.Warning("[VehicleSpawner] 'Scenario' not found in scene.");
                 return false;
             }
+
+            CacheStageSpawner();
 
             foreach (var t in scenarioGO.GetComponentsInChildren<Transform>(true))
             {
@@ -452,6 +463,16 @@ namespace SprocketMultiplayer.Core {
                         }
                     }
 
+                    if (cachedSpawner == null)
+                    {
+                        var spawner = TryCast<VehicleSpawner>(mb);
+                        if (spawner != null)
+                        {
+                            cachedSpawner = spawner;
+                            MelonLogger.Msg($"[VehicleSpawner] VehicleSpawner found on '{t.name}'.");
+                        }
+                    }
+
                     // Cache ITechFrame
                     if (cachedTechFrame == null)
                     {
@@ -469,7 +490,7 @@ namespace SprocketMultiplayer.Core {
                     }
                 }
 
-                if (cachedSource != null) break;
+                if (cachedSource != null && cachedSpawner != null) break;
             }
 
             if (cachedSource == null)
@@ -477,41 +498,207 @@ namespace SprocketMultiplayer.Core {
                 MelonLogger.Warning("[VehicleSpawner] VehicleSource not found.");
                 return false;
             }
+            if (cachedSpawner == null)
+            {
+                MelonLogger.Warning("[VehicleSpawner] VehicleSpawner not found.");
+                return false;
+            }
 
             // Grab VehicleFactories singleton — this is the IVehicleFactory implementation
-            if (cachedFactory == null)
+            CacheVehicleFactory();
+            CacheTechFrame();
+            CacheAssemblyResources();
+            GetVehicleRegister();
+
+            bool ready = cachedFactory != null &&
+                         cachedTechFrame != null &&
+                         cachedRegister != null &&
+                         cachedStageFactories != null &&
+                         cachedStageFactories.Length > 0;
+
+            if (!ready)
             {
+                MelonLogger.Warning(
+                    "[VehicleSpawner] Scene components incomplete: " +
+                    $"factory={(cachedFactory != null ? "yes" : "no")} " +
+                    $"techFrame={(cachedTechFrame != null ? "yes" : "no")} " +
+                    $"register={(cachedRegister != null ? "yes" : "no")} " +
+                    $"stageFactories={(cachedStageFactories?.Length ?? 0)}");
+            }
+
+            return ready;
+        }
+
+        private static void CacheStageSpawner()
+        {
+            StageVehicleSpawnEvent fallback = null;
+            StageVehicleSpawnEvent player = null;
+
+            foreach (var stageEvent in UnityEngine.Object.FindObjectsOfType<StageVehicleSpawnEvent>())
+            {
+                if (stageEvent == null) continue;
+                if (fallback == null) fallback = stageEvent;
+
                 try
                 {
-                    var staticFlags  = System.Reflection.BindingFlags.Public   |
-                                       System.Reflection.BindingFlags.NonPublic |
-                                       System.Reflection.BindingFlags.Static;
-                    var managedType  = typeof(VehicleFactories);
-                    var instanceProp = managedType.GetProperty("instance", staticFlags)
-                                    ?? managedType.GetProperty("Instance", staticFlags);
-
-                    if (instanceProp != null)
+                    string path = GetPath(stageEvent.transform);
+                    string mode = stageEvent.blueprintSource != null ? stageEvent.blueprintSource.Mode.ToString() : "";
+                    if (path.IndexOf("Player Mission", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        mode.IndexOf("EditorExitSave", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        var vf = instanceProp.GetValue(null) as VehicleFactories;
-                        if (vf != null)
-                        {
-                            cachedFactory = vf.Cast<Il2CppSystem.Object>();
-                            MelonLogger.Msg($"[VehicleSpawner] VehicleFactories instance cached.");
-                        }
-                        else
-                        {
-                            MelonLogger.Warning("[VehicleSpawner] VehicleFactories.instance is null — DI pipeline may not have run yet.");
-                        }
+                        player = stageEvent;
+                        break;
+                    }
+                }
+                catch { }
+            }
+
+            var selected = player ?? fallback;
+            if (selected == null) return;
+
+            try
+            {
+                if (cachedSource == null && selected.blueprintSource != null)
+                {
+                    cachedSource = selected.blueprintSource;
+                    MelonLogger.Msg($"[VehicleSpawner] VehicleSource selected from stage event '{GetPath(selected.transform)}'.");
+                }
+            }
+            catch { }
+
+            try
+            {
+                if (cachedSpawner == null && selected.spawner != null)
+                {
+                    cachedSpawner = selected.spawner;
+                    MelonLogger.Msg($"[VehicleSpawner] VehicleSpawner selected from stage event '{GetPath(selected.transform)}'.");
+                }
+            }
+            catch { }
+        }
+
+        private static void CacheVehicleFactory()
+        {
+            if (cachedFactory != null) return;
+
+            try
+            {
+                var staticFlags  = System.Reflection.BindingFlags.Public   |
+                                   System.Reflection.BindingFlags.NonPublic |
+                                   System.Reflection.BindingFlags.Static;
+                var managedType  = typeof(VehicleFactories);
+                var instanceProp = managedType.GetProperty("instance", staticFlags)
+                                ?? managedType.GetProperty("Instance", staticFlags);
+
+                if (instanceProp != null)
+                {
+                    var vf = instanceProp.GetValue(null) as VehicleFactories;
+                    if (vf != null)
+                    {
+                        cachedFactory = vf.Cast<Il2CppSystem.Object>();
+                        MelonLogger.Msg("[VehicleSpawner] VehicleFactories instance cached.");
                     }
                     else
                     {
-                        MelonLogger.Warning("[VehicleSpawner] VehicleFactories instance property not found.");
+                        MelonLogger.Warning("[VehicleSpawner] VehicleFactories.instance is null.");
                     }
                 }
-                catch (Exception ex) { MelonLogger.Warning($"[VehicleSpawner] VehicleFactories lookup: {ex.Message}"); }
+                else
+                {
+                    MelonLogger.Warning("[VehicleSpawner] VehicleFactories instance property not found.");
+                }
+            }
+            catch (Exception ex) { MelonLogger.Warning($"[VehicleSpawner] VehicleFactories lookup: {ex.Message}"); }
+        }
+
+        private static void CacheTechFrame()
+        {
+            if (cachedTechFrame != null) return;
+
+            try
+            {
+                if (!techTreeInitiated)
+                {
+                    TechTreeLoader.Initiate();
+                    techTreeInitiated = true;
+                    MelonLogger.Msg("[VehicleSpawner] TechTreeLoader initiated.");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[VehicleSpawner] TechTreeLoader.Initiate: {ex.Message}");
             }
 
-            return cachedFactory != null;
+            try
+            {
+                var date = GetSpawnTechDate();
+                ITechFrame frame = null;
+
+                try
+                {
+                    var frameFactory = ITechFrameFactory.Instance;
+                    if (frameFactory != null)
+                        frame = frameFactory.GetTechFrameAtDate(date);
+                }
+                catch { }
+
+                if (frame == null)
+                    frame = new TechTreeLoader().GetTechFrameAtDate(date);
+
+                if (frame != null && frame.Pointer != IntPtr.Zero)
+                {
+                    cachedTechFrame = new Il2CppSystem.Object(frame.Pointer);
+                    MelonLogger.Msg($"[VehicleSpawner] ITechFrame generated for {date}: {cachedTechFrame.GetIl2CppType()?.FullName}");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[VehicleSpawner] ITechFrame generation failed: {ex.Message}");
+            }
+        }
+
+        private static TechDate GetSpawnTechDate()
+        {
+            try
+            {
+                if (cachedSource != null && cachedSource.MaxTechDate.Valid)
+                    return cachedSource.MaxTechDate;
+            }
+            catch { }
+
+            return new TechDate(1945, 0, 0);
+        }
+
+        private static void CacheAssemblyResources()
+        {
+            if (cachedStageFactories != null && cachedStageFactories.Length > 0) return;
+
+            try
+            {
+                if (cachedSpawner != null && cachedSpawner.assemblyResourcesOverride != null)
+                    cachedAssemblyResources = cachedSpawner.assemblyResourcesOverride;
+            }
+            catch { }
+
+            try
+            {
+                if (cachedAssemblyResources == null)
+                    cachedAssemblyResources = VehicleAssemblyResources.Default;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[VehicleSpawner] VehicleAssemblyResources.Default: {ex.Message}");
+            }
+
+            try
+            {
+                cachedStageFactories = cachedAssemblyResources?.GetFactories();
+                MelonLogger.Msg($"[VehicleSpawner] Assembly stage factories cached: {cachedStageFactories?.Length ?? 0}.");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[VehicleSpawner] Assembly stage factories lookup: {ex.Message}");
+            }
         }
 
         private static IVehicleRegister GetVehicleRegister()
@@ -534,6 +721,23 @@ namespace SprocketMultiplayer.Core {
                 catch { }
             }
 
+            foreach (var gameMode in UnityEngine.Object.FindObjectsOfType<GameMode>())
+            {
+                if (gameMode == null || gameMode.Pointer == IntPtr.Zero) continue;
+
+                try
+                {
+                    if (TryReadVehicleRegisterFromObject(new Il2CppSystem.Object(gameMode.Pointer), out var reg))
+                    {
+                        cachedRegister = reg;
+                        MelonLogger.Msg($"[VehicleSpawner] IVehicleRegister found on game mode '{gameMode.name}'.");
+                        InjectVehicleRegisterIntoStageEvents(cachedRegister);
+                        return reg;
+                    }
+                }
+                catch { }
+            }
+
             foreach (var mb in UnityEngine.Object.FindObjectsOfType<MonoBehaviour>())
             {
                 if (mb == null || mb.Pointer == IntPtr.Zero) continue;
@@ -544,14 +748,106 @@ namespace SprocketMultiplayer.Core {
                     {
                         cachedRegister = reg;
                         MelonLogger.Msg("[VehicleSpawner] IVehicleRegister found.");
+                        InjectVehicleRegisterIntoStageEvents(cachedRegister);
                         return reg;
                     }
                 }
                 catch { }
             }
 
+            cachedRegister = CreateVehicleRegister();
+            if (cachedRegister != null)
+            {
+                InjectVehicleRegisterIntoStageEvents(cachedRegister);
+                MelonLogger.Msg("[VehicleSpawner] IVehicleRegister created and injected.");
+                return cachedRegister;
+            }
+
             MelonLogger.Warning("[VehicleSpawner] IVehicleRegister not found.");
             return null;
+        }
+
+        private static bool TryReadVehicleRegisterFromObject(Il2CppSystem.Object obj, out IVehicleRegister register)
+        {
+            register = null;
+            if (obj == null || obj.Pointer == IntPtr.Zero) return false;
+
+            try
+            {
+                var direct = obj.TryCast<IVehicleRegister>();
+                if (direct != null)
+                {
+                    register = direct;
+                    return true;
+                }
+            }
+            catch { }
+
+            try
+            {
+                var flags = Il2CppSystem.Reflection.BindingFlags.Public |
+                            Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                            Il2CppSystem.Reflection.BindingFlags.Instance;
+
+                foreach (var propName in new[] { "VehicleRegister", "vehicleRegister", "register", "SharedState", "sharedState", "activeState", "State" })
+                {
+                    var prop = obj.GetIl2CppType().GetProperty(propName, flags);
+                    if (prop == null) continue;
+
+                    var value = prop.GetValue(obj);
+                    if (value == null) continue;
+
+                    try
+                    {
+                        var candidate = value.TryCast<IVehicleRegister>();
+                        if (candidate != null)
+                        {
+                            register = candidate;
+                            return true;
+                        }
+                    }
+                    catch { }
+
+                    var nested = AsIl2CppObject(value);
+                    if (nested != null && nested.Pointer != obj.Pointer && TryReadVehicleRegisterFromObject(nested, out register))
+                        return true;
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        private static IVehicleRegister CreateVehicleRegister()
+        {
+            try
+            {
+                var register = new VehicleRegister();
+                return register.TryCast<IVehicleRegister>() ?? new Il2CppSystem.Object(register.Pointer).TryCast<IVehicleRegister>();
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[VehicleSpawner] CreateVehicleRegister: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static void InjectVehicleRegisterIntoStageEvents(IVehicleRegister register)
+        {
+            if (register == null) return;
+
+            foreach (var stageEvent in UnityEngine.Object.FindObjectsOfType<StageVehicleSpawnEvent>())
+            {
+                if (stageEvent == null) continue;
+                try
+                {
+                    stageEvent.SetVehicleRegister(register);
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"[VehicleSpawner] SetVehicleRegister on '{stageEvent.name}': {ex.Message}");
+                }
+            }
         }
 
         private static VehicleController GetVehicleController()
@@ -636,19 +932,12 @@ namespace SprocketMultiplayer.Core {
         public static bool IsFactoryAvailable()
         {
             EnsureSceneComponents();
-            if (cachedFactory == null) return false;
-
-            try
-            {
-                var il2Flags     = Il2CppSystem.Reflection.BindingFlags.Public   |
-                                   Il2CppSystem.Reflection.BindingFlags.NonPublic |
-                                   Il2CppSystem.Reflection.BindingFlags.Instance;
-                var contextField = cachedFactory.GetIl2CppType().GetField("context", il2Flags);
-                // If the field doesn't exist on this build, assume ready
-                if (contextField == null) return true;
-                return contextField.GetValue(cachedFactory) != null;
-            }
-            catch { return false; }
+            return cachedFactory != null &&
+                   cachedSpawner != null &&
+                   cachedTechFrame != null &&
+                   cachedRegister != null &&
+                   cachedStageFactories != null &&
+                   cachedStageFactories.Length > 0;
         }
 
         // Ensures components are cached, then waits a brief settle frame.
@@ -685,6 +974,9 @@ namespace SprocketMultiplayer.Core {
             cachedFactory    = null;
             cachedTechFrame  = null;
             cachedRegister   = null;
+            cachedSpawner    = null;
+            cachedAssemblyResources = null;
+            cachedStageFactories = null;
             cachedController = null;
             MelonLogger.Msg("[VehicleSpawner] Caches cleared.");
         }
@@ -701,6 +993,35 @@ namespace SprocketMultiplayer.Core {
                 return new Il2CppSystem.Object(mb.Pointer).TryCast<T>();
             }
             catch { return null; }
+        }
+
+        private static Il2CppSystem.Object AsIl2CppObject(object value)
+        {
+            if (value == null) return null;
+
+            if (value is Il2CppSystem.Object il2Object)
+                return il2Object;
+
+            if (value is Il2CppObjectBase obj && obj.Pointer != IntPtr.Zero)
+                return new Il2CppSystem.Object(obj.Pointer);
+
+            return null;
+        }
+
+        private static string GetPath(Transform transform)
+        {
+            if (transform == null) return "<no transform>";
+
+            var parts = new List<string>();
+            Transform current = transform;
+            while (current != null)
+            {
+                parts.Add(current.name);
+                current = current.parent;
+            }
+
+            parts.Reverse();
+            return string.Join("/", parts.ToArray());
         }
 
         // =====================================================================

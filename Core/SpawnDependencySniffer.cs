@@ -5,6 +5,7 @@ using System.Reflection;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using Il2CppSprocket;
 using Il2CppSprocket.Gameplay.VehicleControl;
 using Il2CppSprocket.Spawning;
 using Il2CppSprocket.TechTrees;
@@ -19,6 +20,7 @@ namespace SprocketMultiplayer.Core
     public static class SpawnDependencySniffer
     {
         private static bool running;
+        private static bool techTreeInitiated;
 
         public static void Start()
         {
@@ -164,7 +166,7 @@ namespace SprocketMultiplayer.Core
                 catch { }
             }
 
-            return null;
+            return FindTechFrameFromTechTree();
         }
 
         private static Il2CppSystem.Object FindTechFrameInScenarioSpawners()
@@ -219,7 +221,22 @@ namespace SprocketMultiplayer.Core
                 catch { }
             }
 
-            return null;
+            foreach (var gameMode in UnityEngine.Object.FindObjectsOfType<GameMode>())
+            {
+                if (gameMode == null || gameMode.Pointer == IntPtr.Zero) continue;
+
+                try
+                {
+                    if (TryReadVehicleRegisterFromObject(new Il2CppSystem.Object(gameMode.Pointer), out var reg))
+                    {
+                        InjectVehicleRegisterIntoStageEvents(stageEvents, reg);
+                        return reg;
+                    }
+                }
+                catch { }
+            }
+
+            return CreateAndInjectVehicleRegister(stageEvents);
         }
 
         private static VehicleSpawner FindOfficialSpawner(StageVehicleSpawnEvent[] stageEvents)
@@ -256,6 +273,120 @@ namespace SprocketMultiplayer.Core
             }
 
             return null;
+        }
+
+        private static Il2CppSystem.Object FindTechFrameFromTechTree()
+        {
+            try
+            {
+                if (!techTreeInitiated)
+                {
+                    TechTreeLoader.Initiate();
+                    techTreeInitiated = true;
+                }
+            }
+            catch { }
+
+            try
+            {
+                TechDate date = new TechDate(1945, 0, 0);
+                ITechFrame frame = null;
+
+                try
+                {
+                    var factory = ITechFrameFactory.Instance;
+                    if (factory != null)
+                        frame = factory.GetTechFrameAtDate(date);
+                }
+                catch { }
+
+                if (frame == null)
+                    frame = new TechTreeLoader().GetTechFrameAtDate(date);
+
+                if (frame != null && frame.Pointer != IntPtr.Zero)
+                    return new Il2CppSystem.Object(frame.Pointer);
+            }
+            catch { }
+
+            return null;
+        }
+
+        private static bool TryReadVehicleRegisterFromObject(Il2CppSystem.Object obj, out IVehicleRegister register)
+        {
+            register = null;
+            if (obj == null || obj.Pointer == IntPtr.Zero) return false;
+
+            try
+            {
+                var direct = obj.TryCast<IVehicleRegister>();
+                if (direct != null)
+                {
+                    register = direct;
+                    return true;
+                }
+            }
+            catch { }
+
+            try
+            {
+                var flags = Il2CppSystem.Reflection.BindingFlags.Public |
+                            Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                            Il2CppSystem.Reflection.BindingFlags.Instance;
+
+                foreach (var propName in new[] { "VehicleRegister", "vehicleRegister", "register", "SharedState", "sharedState", "activeState", "State" })
+                {
+                    var prop = obj.GetIl2CppType().GetProperty(propName, flags);
+                    if (prop == null) continue;
+
+                    var value = prop.GetValue(obj);
+                    if (value == null) continue;
+
+                    try
+                    {
+                        var candidate = value.TryCast<IVehicleRegister>();
+                        if (candidate != null)
+                        {
+                            register = candidate;
+                            return true;
+                        }
+                    }
+                    catch { }
+
+                    var nested = AsIl2CppObject(value);
+                    if (nested != null && nested.Pointer != obj.Pointer && TryReadVehicleRegisterFromObject(nested, out register))
+                        return true;
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        private static IVehicleRegister CreateAndInjectVehicleRegister(StageVehicleSpawnEvent[] stageEvents)
+        {
+            try
+            {
+                var concrete = new VehicleRegister();
+                var register = concrete.TryCast<IVehicleRegister>() ?? new Il2CppSystem.Object(concrete.Pointer).TryCast<IVehicleRegister>();
+                if (register != null)
+                    InjectVehicleRegisterIntoStageEvents(stageEvents, register);
+                return register;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void InjectVehicleRegisterIntoStageEvents(StageVehicleSpawnEvent[] stageEvents, IVehicleRegister register)
+        {
+            if (stageEvents == null || register == null) return;
+
+            foreach (var stageEvent in stageEvents)
+            {
+                if (stageEvent == null) continue;
+                try { stageEvent.SetVehicleRegister(register); } catch { }
+            }
         }
 
         private static VehicleController FindVehicleController()

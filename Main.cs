@@ -98,7 +98,6 @@ namespace SprocketMultiplayer
 
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsActiveMultiplayer)
             {
-                MelonLogger.Msg("[SceneLoad] Not in multiplayer mode, ignoring.");
                 return;
             }
 

@@ -107,6 +107,7 @@ namespace SprocketMultiplayer.UI
         public static void ShowNativeUI()
         {
             if (injectedRoot != null) injectedRoot.SetActive(true);
+            SetNativeBattleUiVisible(true);
         }
 
         private static void BuildEntryControls(Transform parent)
@@ -122,8 +123,8 @@ namespace SprocketMultiplayer.UI
                     PlayerName = value.Trim();
             }));
 
-            CreateButton(panel.transform, "HostButton", "HOST", new Vector2(0, -166), OnHostClicked);
-            CreateButton(panel.transform, "JoinButton", "JOIN", new Vector2(0, -224), OnJoinClicked);
+            CreateButton(panel.transform, "HostButton", "HOST MULTIPLAYER", new Vector2(0, -166), OnHostClicked, 230);
+            CreateButton(panel.transform, "JoinButton", "CONNECT TO HOST", new Vector2(0, -224), OnJoinClicked, 230);
         }
 
         private static void BuildConnectPanel(Transform parent)
@@ -134,9 +135,16 @@ namespace SprocketMultiplayer.UI
             CreateButton(connectPanel.transform, "ConnectButton", "CONNECT", new Vector2(0, -148), () =>
             {
                 string ip = string.IsNullOrWhiteSpace(ipInput.text) ? "127.0.0.1" : ipInput.text.Trim();
+                SetNativeBattleUiVisible(false);
                 LobbyManager.Instance.JoinHost(GetCurrentPlayerName(), ip, DefaultPort);
                 connectPanel.SetActive(false);
                 lobbyPanel.SetActive(true);
+                Refresh();
+            });
+            CreateButton(connectPanel.transform, "CancelButton", "CANCEL", new Vector2(0, -206), () =>
+            {
+                connectPanel.SetActive(false);
+                SetNativeBattleUiVisible(true);
                 Refresh();
             });
             connectPanel.SetActive(false);
@@ -173,6 +181,7 @@ namespace SprocketMultiplayer.UI
                 LobbyManager.Instance.LeaveLobby();
                 lobbyPanel.SetActive(false);
                 connectPanel.SetActive(false);
+                SetNativeBattleUiVisible(true);
                 Refresh();
             });
 
@@ -245,6 +254,7 @@ namespace SprocketMultiplayer.UI
 
         private static void OnHostClicked()
         {
+            SetNativeBattleUiVisible(false);
             lobbyPanel.SetActive(true);
             connectPanel.SetActive(false);
             LobbyManager.Instance.StartHost(GetCurrentPlayerName(), DefaultPort);
@@ -252,6 +262,7 @@ namespace SprocketMultiplayer.UI
 
         private static void OnJoinClicked()
         {
+            SetNativeBattleUiVisible(false);
             connectPanel.SetActive(true);
             lobbyPanel.SetActive(false);
         }
@@ -353,6 +364,28 @@ namespace SprocketMultiplayer.UI
             {
                 MelonLogger.Warning($"[CustomBattleUI] Weather lock failed: {ex.Message}");
             }
+        }
+
+        private static void SetNativeBattleUiVisible(bool visible)
+        {
+            string[] paths =
+            {
+                "Root/Canvas/Content/Roster",
+                "Root/Canvas/Content/Unit config",
+                "Root/Canvas/Content/Team config",
+                "Root/Canvas/Content/Teams",
+                "Root/Canvas/Content/Bar",
+                "Root/Canvas/Content/Map/Confirm"
+            };
+
+            foreach (string path in paths)
+            {
+                GameObject target = GameObject.Find(path);
+                if (target != null)
+                    target.SetActive(visible);
+            }
+
+            LockWeatherControls();
         }
 
         private static GameObject CreatePanel(string name, Transform parent, Vector2 anchorMin, Vector2 anchorMax)

@@ -348,10 +348,10 @@ namespace SprocketMultiplayer.UI
             const float cellWidth = 178f;
             const float cellHeight = 78f;
             const float gapX = 8f;
-            const float gapY = 2f;
+            const float gapY = 5f;
             const int pageSize = columns * rows;
             float startX = -((columns - 1) * (cellWidth + gapX)) / 2f;
-            float startY = 301f;
+            float startY = 291f;
 
             TextMeshProUGUI title = CreateTextTMP(parent, "TankListTitle", "SELECT TANK", new Vector2(0, 360), 18, TextAlignmentOptions.Center);
             title.rectTransform.sizeDelta = new Vector2(360, 32);

@@ -346,14 +346,14 @@ namespace SprocketMultiplayer.UI
             const int columns = 2;
             const int rows = 10;
             const float cellWidth = 178f;
-            const float cellHeight = 58f;
+            const float cellHeight = 66f;
             const float gapX = 8f;
-            const float gapY = 5f;
+            const float gapY = 2f;
             const int pageSize = columns * rows;
             float startX = -((columns - 1) * (cellWidth + gapX)) / 2f;
-            float startY = 280f;
+            float startY = 307f;
 
-            TextMeshProUGUI title = CreateTextTMP(parent, "TankListTitle", "SELECT TANK", new Vector2(0, 345), 18, TextAlignmentOptions.Center);
+            TextMeshProUGUI title = CreateTextTMP(parent, "TankListTitle", "SELECT TANK", new Vector2(0, 360), 18, TextAlignmentOptions.Center);
             title.rectTransform.sizeDelta = new Vector2(360, 32);
 
             if (tanks.Count == 0)
@@ -382,17 +382,17 @@ namespace SprocketMultiplayer.UI
 
             if (pageCount > 1)
             {
-                CreateSmallButton(parent, "Btn_TankPagePrev", "<", new Vector2(-95, -345), new Vector2(72, 34), () =>
+                CreateSmallButton(parent, "Btn_TankPagePrev", "<", new Vector2(-95, -365), new Vector2(72, 34), () =>
                 {
                     if (tankPage <= 0) return;
                     tankPage--;
                     RebuildTankGrid();
                 });
 
-                TextMeshProUGUI pageText = CreateTextTMP(parent, "TankPageText", $"{tankPage + 1}/{pageCount}", new Vector2(0, -345), 14, TextAlignmentOptions.Center);
+                TextMeshProUGUI pageText = CreateTextTMP(parent, "TankPageText", $"{tankPage + 1}/{pageCount}", new Vector2(0, -365), 14, TextAlignmentOptions.Center);
                 pageText.rectTransform.sizeDelta = new Vector2(80, 34);
 
-                CreateSmallButton(parent, "Btn_TankPageNext", ">", new Vector2(95, -345), new Vector2(72, 34), () =>
+                CreateSmallButton(parent, "Btn_TankPageNext", ">", new Vector2(95, -365), new Vector2(72, 34), () =>
                 {
                     if (tankPage >= pageCount - 1) return;
                     tankPage++;
@@ -445,8 +445,8 @@ namespace SprocketMultiplayer.UI
             RectTransform iconRect = iconObj.AddComponent<RectTransform>();
             iconRect.anchorMin = new Vector2(0.5f, 1f);
             iconRect.anchorMax = new Vector2(0.5f, 1f);
-            iconRect.anchoredPosition = new Vector2(0, -22);
-            iconRect.sizeDelta = new Vector2(160, 36);
+            iconRect.anchoredPosition = new Vector2(0, -24);
+            iconRect.sizeDelta = new Vector2(160, 60);
 
             Image iconImg = iconObj.AddComponent<Image>();
             iconImg.preserveAspect = true;
@@ -468,7 +468,7 @@ namespace SprocketMultiplayer.UI
             textRect.anchorMin = Vector2.zero;
             textRect.anchorMax = Vector2.one;
             textRect.offsetMin = new Vector2(4, 2);
-            textRect.offsetMax = new Vector2(-4, -38);
+            textRect.offsetMax = new Vector2(-4, -52);
 
             TextMeshProUGUI tmp = textObj.AddComponent<TextMeshProUGUI>();
             tmp.text = tank.Name;

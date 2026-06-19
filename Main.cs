@@ -1,14 +1,12 @@
 using System;
-using MelonLoader;
-using UnityEngine;
 using System.Collections;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.Injection;
+using MelonLoader;
 using SprocketMultiplayer.Core;
 using SprocketMultiplayer.UI;
-using SprocketMultiplayer.Patches;
+using UnityEngine;
 using UnityEngine.SceneManagement;
-using Il2CppSprocket;
 
 namespace SprocketMultiplayer
 {
@@ -17,7 +15,7 @@ namespace SprocketMultiplayer
         public static string GetPlayerFaction() => "AllowedVehicles";
 
         private static NetworkManager network;
-        private bool consoleSpawned = false;
+        private bool consoleSpawned;
         private string lastSceneName = "";
 
         public override void OnInitializeMelon()
@@ -28,69 +26,28 @@ namespace SprocketMultiplayer
 
             try
             {
-                ClassInjector.RegisterTypeInIl2Cpp<Menu.HandleClicks>();
                 ClassInjector.RegisterTypeInIl2Cpp<UI.Console>();
-                MelonLogger.Msg("✓ IL2CPP types registered");
+                MelonLogger.Msg("[Init] Registered IL2CPP types.");
             }
             catch (Exception ex)
             {
-                MelonLogger.Error($"Failed to register IL2CPP types: {ex.Message}");
+                MelonLogger.Error($"[Init] Failed to register IL2CPP types: {ex.Message}");
             }
 
             try
             {
                 network = new NetworkManager();
-                MelonLogger.Msg("✓ NetworkManager initialized");
+                MelonLogger.Msg("[Init] NetworkManager initialized.");
             }
             catch (Exception ex)
             {
-                MelonLogger.Error($"NetworkManager initialization failed: {ex.Message}");
+                MelonLogger.Error($"[Init] NetworkManager initialization failed: {ex.Message}");
                 network = null;
             }
 
-            // PatchAll() picks up SceneStartPatch via its [HarmonyPatch] attribute.
-            // We also apply it manually in a separate Harmony instance so a failure
-            // in another patch class can't prevent SceneStartPatch from loading.
-            try
-            {
-                new HarmonyLib.Harmony("SprocketMultiplayer").PatchAll();
-                MelonLogger.Msg("✓ Harmony patches applied");
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Warning($"Some Harmony patches failed: {ex.Message}");
-            }
-
-            try
-            {
-                var harmony  = new HarmonyLib.Harmony("SprocketMultiplayer.SceneStart");
-                var original = HarmonyLib.AccessTools.Method(typeof(MissionScenarioGameState), "Update");
-                if (original != null)
-                {
-                    var postfix = new HarmonyLib.HarmonyMethod(
-                        typeof(SceneStartPatch).GetMethod("Postfix",
-                            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic));
-                    harmony.Patch(original, postfix: postfix);
-                    MelonLogger.Msg("✓ SceneStartPatch applied to MissionScenarioGameState.Update");
-                }
-                else
-                {
-                    MelonLogger.Error("✗ SceneStartPatch: MissionScenarioGameState.Update not found!");
-                }
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Error($"SceneStartPatch failed: {ex.Message}");
-            }
-
-            MelonLogger.Msg("========================================");
-            MelonLogger.Msg("✓ Initialization complete");
+            MelonLogger.Msg("[Init] CustomBattle multiplayer flow enabled.");
             MelonLogger.Msg("========================================");
         }
-
-        // =====================================================================
-        // Faction helper — used by Lobby to gate tank selection
-        // =====================================================================
 
         public static class VehicleManager
         {
@@ -104,10 +61,6 @@ namespace SprocketMultiplayer
             }
         }
 
-        // =====================================================================
-        // Update loop
-        // =====================================================================
-
         public override void OnUpdate()
         {
             network?.PollEvents();
@@ -118,30 +71,30 @@ namespace SprocketMultiplayer
             CheckSceneChange();
         }
 
-        // =====================================================================
-        // Scene change handling
-        // =====================================================================
-
         private void CheckSceneChange()
         {
             var activeScene = SceneManager.GetActiveScene();
-            if (activeScene.name != lastSceneName && !string.IsNullOrEmpty(activeScene.name))
-            {
-                string oldScene = lastSceneName;
-                lastSceneName = activeScene.name;
-                if (!string.IsNullOrEmpty(oldScene))
-                    OnSceneChanged(activeScene);
-            }
+            if (activeScene.name == lastSceneName || string.IsNullOrEmpty(activeScene.name))
+                return;
+
+            string oldScene = lastSceneName;
+            lastSceneName = activeScene.name;
+            OnSceneChanged(activeScene, oldScene);
         }
 
-        private void OnSceneChanged(Scene scene)
+        private void OnSceneChanged(Scene scene, string oldScene)
         {
             MelonLogger.Msg("========================================");
             MelonLogger.Msg($"SCENE CHANGED: {scene.name}");
             MelonLogger.Msg("========================================");
 
             VehicleSpawnHelper.ClearCaches();
-            SceneStartPatch.Reset();
+
+            if (scene.name == "CustomBattleCreation")
+            {
+                MelonCoroutines.Start(InjectCustomBattleUiAfterDelay());
+                return;
+            }
 
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsActiveMultiplayer)
             {
@@ -149,29 +102,18 @@ namespace SprocketMultiplayer
                 return;
             }
 
-            // When Lobby loads 'Main' as the DI intermediary, PendingSceneName is set.
-            // We wait for Main's pipeline to finish, then load the real target scene.
-            // SceneStartPatch fires on the first MissionScenarioGameState.Update in
-            // that target scene and calls MultiplayerManager.OnSceneLoaded().
-            if (scene.name == "Main" && Lobby.PendingSceneName != null)
+            if (LobbyManager.Instance.MatchLoading)
             {
-                string target = Lobby.PendingSceneName;
-                Lobby.PendingSceneName = null;
-                MelonLogger.Msg($"[SceneLoad] Main loaded — transitioning to {target} after DI init...");
-                MelonCoroutines.Start(LoadTargetSceneFromMain(target));
+                MelonLogger.Msg("[SceneLoad] Multiplayer scene loaded. Starting spawn dependency sniff.");
+                SpawnDependencySniffer.Start();
             }
         }
 
-        private IEnumerator LoadTargetSceneFromMain(string targetScene)
+        private IEnumerator InjectCustomBattleUiAfterDelay()
         {
-            yield return new WaitForSeconds(2f);
-            MelonLogger.Msg($"[SceneLoad] Loading {targetScene}...");
-            SceneManager.LoadScene(targetScene);
+            yield return new WaitForSeconds(0.5f);
+            CustomBattleMultiplayerUI.Inject();
         }
-
-        // =====================================================================
-        // Console spawning
-        // =====================================================================
 
         private void TrySpawnConsole()
         {
@@ -197,15 +139,11 @@ namespace SprocketMultiplayer
             }
         }
 
-        // =====================================================================
-        // Shutdown
-        // =====================================================================
-
         public override void OnApplicationQuit()
         {
             MelonLogger.Msg("Sprocket Multiplayer shutting down...");
             network?.Shutdown();
-            MelonLogger.Msg("✓ Sprocket Multiplayer shut down.");
+            MelonLogger.Msg("[Shutdown] Sprocket Multiplayer shut down.");
         }
     }
 }

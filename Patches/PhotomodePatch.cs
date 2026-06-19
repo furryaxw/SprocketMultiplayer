@@ -6,7 +6,6 @@ using Il2CppSprocket.Gameplay;
 using Il2CppSprocket.VehicleControl;
 using MelonLoader;
 using SprocketMultiplayer.Core;
-using SprocketMultiplayer.Unused;
 using UnityEngine;
 using UnityEngine.InputSystem;
 

@@ -183,6 +183,7 @@ namespace SprocketMultiplayer.UI
             return IsOpen;
         }
 
+        // Command receiver and their processing
         private void ProcessCommand(string cmd) {
 
             if (string.IsNullOrWhiteSpace(cmd))
@@ -192,28 +193,7 @@ namespace SprocketMultiplayer.UI
 
             string[] parts = cmd.Split(' ');
             switch (parts[0].ToLower()) {
-                        
-                case "ping":
-                    AddLog("Pong!");
-                    break;
-
-                case "host":
-                    if (parts.Length >= 2 && int.TryParse(parts[1], out int port))
-                    {
-                        NetworkManager.Instance?.StartHost(port);
-                        AddLog($"Started host on port {port}");
-                    }
-                    else AddLog("Usage: host <port>");
-                    break;
-
-                case "connect":
-                    if (parts.Length >= 3 && int.TryParse(parts[2], out int connectPort)) {
-                        NetworkManager.Instance?.ConnectToHost(parts[1], connectPort);
-                        AddLog($"Connecting to {parts[1]}:{connectPort}");
-                    }
-                    else AddLog("Usage: connect <ip> <port>");
-                    break;
-
+                
                 case "help":
                     AddLog("Available commands:");
                     AddLog("─────────────────────────────");
@@ -222,7 +202,6 @@ namespace SprocketMultiplayer.UI
                     AddLog("connect <ip> <port> - Connect to an existing host");
                     AddLog("status              - Show current network status");
                     AddLog("clients             - Show connected clients (Host only)");
-                    AddLog("inspect <target>    - Inspect game assemblies (debug)");
                     AddLog("clear               - Clear the console log");
                     AddLog("time                - Display system time");
                     AddLog("info                - Show mod information");
@@ -230,14 +209,46 @@ namespace SprocketMultiplayer.UI
                     AddLog("─────────────────────────────");
                     break;
                 
+                case "ping":
+                    AddLog("Pong!");
+                    break;
+
+                case "host":
+                    if (parts.Length >= 2 &&
+                        int.TryParse(parts[1], out int port) &&
+                        port >= 1024 &&
+                        port <= 65535) {
+                        NetworkManager.Instance?.StartHost(port);
+                        AddLog($"Started host on port {port}");
+                    }
+                    else {
+                        AddLog("Usage: host <port>");
+                        AddLog("Port must be between 1024 and 65535.");
+                    }
+                    break;
+
+                case "connect":
+                    if (parts.Length >= 3 &&
+                        int.TryParse(parts[2], out int connectPort) &&
+                        connectPort >= 1024 &&
+                        connectPort <= 65535) {
+                        NetworkManager.Instance?.ConnectToHost(parts[1], connectPort);
+                        AddLog($"Connecting to {parts[1]}:{connectPort}");
+                    }
+                    else {
+                        AddLog("Usage: connect <ip> <port>");
+                        AddLog("Port must be between 1024 and 65535.");
+                    }
+                    break;
+                
                 case "time":
                     AddLog($"System time: {DateTime.Now:HH:mm:ss}");
                     break;
 
                 case "info":
-                    AddLog("Currently running Sprocket Multiplayer v0.8.");
-                    AddLog("Created with love by RobCos!");
-                    AddLog("Don't be afraid to DM me in Discord if you find a bug.");
+                    AddLog("Currently running Sprocket Multiplayer v0.85 alpha.");
+                    AddLog("Created with love by RobCos and Axw!");
+                    AddLog("Don't be afraid to DM us in Discord if you find a bug.");
                     break;
                 
                 case "clear":
@@ -275,96 +286,9 @@ namespace SprocketMultiplayer.UI
                 
                 case "clients": 
                 {
-                    var nm = NetworkManager.Instance;
-                    if (nm == null)
-                    {
-                        AddLog("No NetworkManager instance found.");
-                        break;
-                    }
-
-                    var nmType = nm.GetType();
-                    
-                    // Try common property names that might exist
-                    var prop = nmType.GetProperty("ClientCount")
-                               ?? nmType.GetProperty("Clients")
-                               ?? nmType.GetProperty("ConnectedClients")
-                               ?? nmType.GetProperty("clientCount")
-                               ?? nmType.GetProperty("clients");
-
-                    if (prop != null)
-                    {
-                        var val = prop.GetValue(nm);
-                        if (val is int)
-                        {
-                            AddLog("Connected clients: " + val);
-                        }
-                        else if (val is System.Collections.IEnumerable)
-                        {
-                            int cnt = 0;
-                            foreach (var _ in (System.Collections.IEnumerable)val) cnt++;
-                            AddLog("Connected clients: " + cnt);
-                        }
-                        else
-                        {
-                            AddLog("Clients property present but of unknown type: " + (val?.GetType().Name ?? "null"));
-                        }
-                        break;
-                    }
-
-                    // Try methods that might return a count
-                    var method = nmType.GetMethod("GetClientCount")
-                                 ?? nmType.GetMethod("ClientCount")
-                                 ?? nmType.GetMethod("GetClientsCount");
-
-                    if (method != null)
-                    {
-                        try
-                        {
-                            var res = method.Invoke(nm, null);
-                            AddLog("Connected clients: " + (res ?? "null"));
-                        }
-                        catch (Exception ex)
-                        {
-                            AddLog("Error invoking client-count method: " + ex.Message);
-                        }
-                        break;
-                    }
-
-                    // Nothing found — tell what to do
-                    AddLog("NetworkManager does not expose clients or client count.");
-                    AddLog("Send this to dev with full Console Log, this is most likely his mistake.");
+                    AddLog($"Connected clients: {NetworkManager.Instance.ClientCount}");
                     break;
                 }
-                
-                case "inspect":
-                    if (parts.Length < 2)
-                    {
-                        AddLog("Usage: inspect <spawning|vehicles|search>");
-                        break;
-                    }
-                    
-                    switch (parts[1].ToLower())
-                    {
-                        case "spawning":
-                            AddLog("Inspecting Vehicle.Spawning assembly...");
-                            Patches.AssemblyInspector.InspectVehicleSpawning();
-                            AddLog("Check MelonLoader console for results.");
-                            break;
-                        case "vehicles":
-                            AddLog("Inspecting Vehicles assembly...");
-                            Patches.AssemblyInspector.InspectVehiclesAssembly();
-                            AddLog("Check MelonLoader console for results.");
-                            break;
-                        case "search":
-                            AddLog("Searching for spawn methods...");
-                            Patches.AssemblyInspector.SearchForSpawningMethods();
-                            AddLog("Check MelonLoader console for results.");
-                            break;
-                        default:
-                            AddLog("Unknown inspect target. Use: spawning, vehicles, or search");
-                            break;
-                    }
-                    break;
                 
                 default:
                     AddLog($"Unknown command: {cmd}");

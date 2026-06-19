@@ -34,7 +34,7 @@ namespace SprocketMultiplayer
         private List<TcpClient> clients = new List<TcpClient>();
         private Dictionary<TcpClient, DateTime> pingSentTime = new Dictionary<TcpClient, DateTime>();
         private readonly Dictionary<TcpClient, string> clientNicknames = new Dictionary<TcpClient, string>();
-        private readonly HashSet<TcpClient> clientsReadyForPing = new HashSet<TcpClient>(); // NEW
+        private readonly HashSet<TcpClient> clientsReadyForPing = new HashSet<TcpClient>();
         
         private DateTime lastPingTime = DateTime.MinValue;
         public static NetworkManager Instance { get; private set; }
@@ -67,6 +67,7 @@ namespace SprocketMultiplayer
 
                 server = new TcpListener(IPAddress.Any, port);
                 server.Start();
+                CurrentPort = port;
                 MelonLogger.Msg($"Host started on port {port}.");
                 ListenForClients();
             }   

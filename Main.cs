@@ -5,36 +5,30 @@ using System.Collections;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.Injection;
 using SprocketMultiplayer.Core;
-using SprocketMultiplayer.Patches;
 using SprocketMultiplayer.UI;
+using SprocketMultiplayer.Patches;
 using UnityEngine.SceneManagement;
+using Il2CppSprocket;
 
 namespace SprocketMultiplayer
 {
     public class Main : MelonMod
     {
         public static string GetPlayerFaction() => "AllowedVehicles";
-        
+
         private static NetworkManager network;
-        private static bool handlerSpawned = false;
-        private const int MaxRetryAttempts = 3;
         private bool consoleSpawned = false;
-        private static bool photomodeWarning = false;
-        
-        // Scene change detection
         private string lastSceneName = "";
-        
+
         public override void OnInitializeMelon()
         {
             MelonLogger.Msg("========================================");
             MelonLogger.Msg("Sprocket Multiplayer Mod Initializing...");
             MelonLogger.Msg("========================================");
-            
-            // Register IL2CPP types
+
             try
             {
                 ClassInjector.RegisterTypeInIl2Cpp<Menu.HandleClicks>();
-                ClassInjector.RegisterTypeInIl2Cpp<InputHandler>();
                 ClassInjector.RegisterTypeInIl2Cpp<UI.Console>();
                 MelonLogger.Msg("✓ IL2CPP types registered");
             }
@@ -42,15 +36,10 @@ namespace SprocketMultiplayer
             {
                 MelonLogger.Error($"Failed to register IL2CPP types: {ex.Message}");
             }
-            
-            // Initialize NetworkManager
+
             try
             {
                 network = new NetworkManager();
-                if (network == null)
-                {
-                    throw new Exception("NetworkManager constructor returned null");
-                }
                 MelonLogger.Msg("✓ NetworkManager initialized");
             }
             catch (Exception ex)
@@ -58,8 +47,10 @@ namespace SprocketMultiplayer
                 MelonLogger.Error($"NetworkManager initialization failed: {ex.Message}");
                 network = null;
             }
-            
-            // Apply Harmony patches
+
+            // PatchAll() picks up SceneStartPatch via its [HarmonyPatch] attribute.
+            // We also apply it manually in a separate Harmony instance so a failure
+            // in another patch class can't prevent SceneStartPatch from loading.
             try
             {
                 new HarmonyLib.Harmony("SprocketMultiplayer").PatchAll();
@@ -69,40 +60,37 @@ namespace SprocketMultiplayer
             {
                 MelonLogger.Warning($"Some Harmony patches failed: {ex.Message}");
             }
-            
-            // Show photomode warning once
-            if (!photomodeWarning)
+
+            try
             {
-                ShowPhotomodeWarning();
-                photomodeWarning = true;
+                var harmony  = new HarmonyLib.Harmony("SprocketMultiplayer.SceneStart");
+                var original = HarmonyLib.AccessTools.Method(typeof(MissionScenarioGameState), "Update");
+                if (original != null)
+                {
+                    var postfix = new HarmonyLib.HarmonyMethod(
+                        typeof(SceneStartPatch).GetMethod("Postfix",
+                            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic));
+                    harmony.Patch(original, postfix: postfix);
+                    MelonLogger.Msg("✓ SceneStartPatch applied to MissionScenarioGameState.Update");
+                }
+                else
+                {
+                    MelonLogger.Error("✗ SceneStartPatch: MissionScenarioGameState.Update not found!");
+                }
             }
-            
-            // We use OnUpdate for scene detection instead of events
-            MelonLogger.Msg("Scene detection via OnUpdate enabled");
-            
-            // Test VehicleManager
-            MelonLogger.Msg("[VehicleManager] Game started. Testing VehicleManager...");
-            string currentFaction = GetPlayerFaction();
-            bool canPickVehicle = VehicleManager.CheckFaction(currentFaction);
-            MelonLogger.Msg($"[VehicleManager] VehicleManager.CheckFaction returned {canPickVehicle}");
-            
+            catch (Exception ex)
+            {
+                MelonLogger.Error($"SceneStartPatch failed: {ex.Message}");
+            }
+
             MelonLogger.Msg("========================================");
             MelonLogger.Msg("✓ Initialization complete");
             MelonLogger.Msg("========================================");
         }
 
-        private static void ShowPhotomodeWarning()
-        {
-            MelonLogger.Warning(
-                "\n========================================================\n" +
-                "PLEASE NOTE!\n" +
-                "Photomode is disabled while using Sprocket Multiplayer Sessions.\n" +
-                "This is done to prevent users stopping time while in-game.\n" +
-                "Photomode not working IS NOT a bug, but an intended block.\n" +
-                "Thank you for trying the mod, and have fun!\n" +
-                "========================================================"
-            );
-        }
+        // =====================================================================
+        // Faction helper — used by Lobby to gate tank selection
+        // =====================================================================
 
         public static class VehicleManager
         {
@@ -110,191 +98,97 @@ namespace SprocketMultiplayer
 
             public static bool CheckFaction(string playerFaction)
             {
-                MelonLogger.Msg($"[VehicleManager] CheckFaction called with faction: {playerFaction}");
-                if (playerFaction == AllowedFaction)
-                {
-                    MelonLogger.Msg("[VehicleManager] Faction allowed.");
-                    return true;
-                }
-                else
-                {
-                    MelonLogger.Msg("[VehicleManager] Your current faction is not allowed. Select AllowedVehicles faction to pick a tank.");
-                    return false;
-                }
+                if (playerFaction == AllowedFaction) return true;
+                MelonLogger.Msg("[VehicleManager] Faction not allowed. Select AllowedVehicles to pick a tank.");
+                return false;
             }
         }
 
-        public override void OnSceneWasLoaded(int buildIndex, string sceneName)
-        {
-            if (handlerSpawned) return;
-            handlerSpawned = true;
-
-            try
-            {
-                SpawnInputHandler();
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Error($"Spawn failed in scene {sceneName} (buildIndex {buildIndex}): {ex.Message}");
-                MelonCoroutines.Start(DelayedSpawn(0));
-            }
-        }
-
-        private void SpawnInputHandler()
-        {
-            var go = new GameObject("MultiplayerInputHandler");
-            GameObject.DontDestroyOnLoad(go);
-
-            var il2cppType = Il2CppType.From(typeof(InputHandler));
-            var comp = go.AddComponent(il2cppType)?.Cast<InputHandler>();
-            if (comp == null)
-                throw new Exception("Failed to instantiate InputHandler component.");
-            
-            MelonLogger.Msg("Input handler spawned successfully.");
-        }
-
-        private IEnumerator DelayedSpawn(int attempt)
-        {
-            if (attempt >= MaxRetryAttempts)
-            {
-                MelonLogger.Error("Max retry attempts reached. Input handler not spawned.");
-                yield break;
-            }
-
-            yield return new WaitForSeconds(0.1f);
-            try
-            {
-                SpawnInputHandler();
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Error($"Delayed spawn (attempt {attempt + 1}) failed: {ex.Message}");
-                MelonCoroutines.Start(DelayedSpawn(attempt + 1));
-            }
-        }
+        // =====================================================================
+        // Update loop
+        // =====================================================================
 
         public override void OnUpdate()
         {
-            // Poll network events
-            if (network != null)
-            {
-                network.PollEvents();
-            }
-            
-            // Try to spawn console if not yet spawned
+            network?.PollEvents();
+
             if (!consoleSpawned)
-            {
                 TrySpawnConsole();
-            }
-            
-            // Check for scene changes
+
             CheckSceneChange();
         }
+
+        // =====================================================================
+        // Scene change handling
+        // =====================================================================
 
         private void CheckSceneChange()
         {
             var activeScene = SceneManager.GetActiveScene();
-            
-            // Check if scene changed
             if (activeScene.name != lastSceneName && !string.IsNullOrEmpty(activeScene.name))
             {
                 string oldScene = lastSceneName;
                 lastSceneName = activeScene.name;
-                
-                // Only process if we had a previous scene (skip initial load)
                 if (!string.IsNullOrEmpty(oldScene))
-                {
                     OnSceneChanged(activeScene);
-                }
             }
         }
 
         private void OnSceneChanged(Scene scene)
         {
             MelonLogger.Msg("========================================");
-            MelonLogger.Msg($"Scene Changed: {scene.name}");
+            MelonLogger.Msg($"SCENE CHANGED: {scene.name}");
             MelonLogger.Msg("========================================");
-            
-            // Check if multiplayer is active
-            if (NetworkManager.Instance == null)
+
+            VehicleSpawnHelper.ClearCaches();
+            SceneStartPatch.Reset();
+
+            if (NetworkManager.Instance == null || !NetworkManager.Instance.IsActiveMultiplayer)
             {
-                MelonLogger.Msg("[SceneLoad] NetworkManager.Instance is null");
+                MelonLogger.Msg("[SceneLoad] Not in multiplayer mode, ignoring.");
                 return;
             }
-            
-            bool isMultiplayer = NetworkManager.Instance.IsActiveMultiplayer;
-            MelonLogger.Msg($"[SceneLoad] Is multiplayer active? {isMultiplayer}");
-            
-            if (!isMultiplayer)
+
+            // When Lobby loads 'Main' as the DI intermediary, PendingSceneName is set.
+            // We wait for Main's pipeline to finish, then load the real target scene.
+            // SceneStartPatch fires on the first MissionScenarioGameState.Update in
+            // that target scene and calls MultiplayerManager.OnSceneLoaded().
+            if (scene.name == "Main" && Lobby.PendingSceneName != null)
             {
-                MelonLogger.Msg("[SceneLoad] Not in multiplayer mode, ignoring scene load");
-                return;
-            }
-            
-            // Check if this is a gameplay scene
-            bool isGameplayScene = IsGameplayScene(scene.name);
-            MelonLogger.Msg($"[SceneLoad] Is gameplay scene? {isGameplayScene}");
-            
-            if (isGameplayScene)
-            {
-                MelonLogger.Msg($"[SceneLoad] ✓ Multiplayer gameplay scene detected: {scene.name}");
-                
-                // Notify MultiplayerManager
-                if (MultiplayerManager.Instance == null)
-                {
-                    MelonLogger.Error("[SceneLoad] ✗ MultiplayerManager.Instance is NULL!");
-                    return;
-                }
-                
-                MelonLogger.Msg("[SceneLoad] Calling MultiplayerManager.OnSceneLoaded()...");
-                MultiplayerManager.Instance.OnSceneLoaded();
-                MelonLogger.Msg("[SceneLoad] ✓ MultiplayerManager notified");
-            }
-            else
-            {
-                MelonLogger.Msg($"[SceneLoad] Scene '{scene.name}' is not a gameplay scene");
+                string target = Lobby.PendingSceneName;
+                Lobby.PendingSceneName = null;
+                MelonLogger.Msg($"[SceneLoad] Main loaded — transitioning to {target} after DI init...");
+                MelonCoroutines.Start(LoadTargetSceneFromMain(target));
             }
         }
 
-        private bool IsGameplayScene(string sceneName) {
-            string[] gameplayScenes = new string[] {
-                "Railway",
-                "Sandbox"
-            };
-            
-            // Check exact matches
-            foreach (string name in gameplayScenes)
-            {
-                if (sceneName == name)
-                    return true;
-            }
-            
-            // Check if it contains railway
-            // TODO: currently hardcoded.Can be dynamic
-            if (sceneName.Contains("Mission"))
-                return true;
-            
-            return false;
+        private IEnumerator LoadTargetSceneFromMain(string targetScene)
+        {
+            yield return new WaitForSeconds(2f);
+            MelonLogger.Msg($"[SceneLoad] Loading {targetScene}...");
+            SceneManager.LoadScene(targetScene);
         }
+
+        // =====================================================================
+        // Console spawning
+        // =====================================================================
 
         private void TrySpawnConsole()
         {
             try
             {
-                GameObject consoleGO = new GameObject("SprocketConsole");
+                var consoleGO = new GameObject("SprocketConsole");
                 GameObject.DontDestroyOnLoad(consoleGO);
 
-                var il2cppType = Il2CppType.From(typeof(UI.Console));
-                var comp = consoleGO.AddComponent(il2cppType)?.Cast<UI.Console>();
-
+                var comp = consoleGO.AddComponent(Il2CppType.From(typeof(UI.Console)))?.Cast<UI.Console>();
                 if (comp != null)
                 {
-                    MelonLogger.Msg("Console spawned as IL2CPP component successfully.");
+                    MelonLogger.Msg("Console spawned successfully.");
                     consoleSpawned = true;
                 }
                 else
                 {
-                    MelonLogger.Error("Failed to cast or attach Console component.");
+                    MelonLogger.Error("Failed to attach Console component.");
                 }
             }
             catch (Exception ex)
@@ -303,15 +197,14 @@ namespace SprocketMultiplayer
             }
         }
 
+        // =====================================================================
+        // Shutdown
+        // =====================================================================
+
         public override void OnApplicationQuit()
         {
             MelonLogger.Msg("Sprocket Multiplayer shutting down...");
-            
-            if (network != null)
-            {
-                network.Shutdown();
-            }
-            
+            network?.Shutdown();
             MelonLogger.Msg("✓ Sprocket Multiplayer shut down.");
         }
     }

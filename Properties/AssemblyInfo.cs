@@ -3,12 +3,12 @@ using System.Runtime.InteropServices;
 using MelonLoader;
 
 
-[assembly: MelonInfo(typeof(SprocketMultiplayer.Main), "Sprocket Multiplayer", "0.8", "RobCos")]
+[assembly: MelonInfo(typeof(SprocketMultiplayer.Main), "Sprocket Multiplayer", "0.85-alpha", "RobCos")]
 [assembly: MelonGame("HD", "Sprocket")]
 
 
 [assembly: AssemblyTitle("SprocketMultiplayer")]
-[assembly: AssemblyDescription("Multiplayer-prototype mod for Sprocket, letting players team up and play in different Scenarios together.")]
+[assembly: AssemblyDescription("Multiplayer-prototype mod for Sprocket, letting players play against eachother.")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyProduct("SprocketMultiplayer")]
 [assembly: AssemblyCopyright("Copyright ©  2025-2026")]

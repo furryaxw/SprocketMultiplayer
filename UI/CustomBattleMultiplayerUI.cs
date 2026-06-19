@@ -25,6 +25,7 @@ namespace SprocketMultiplayer.UI
         private static Image previewImage;
         private static TMP_InputField nameInput;
         private static readonly List<GameObject> tankButtonObjects = new List<GameObject>();
+        private static int tankPage;
 
         private static object mapMonitorCoroutine;
         private static string lastTankName = "None";
@@ -160,6 +161,7 @@ namespace SprocketMultiplayer.UI
         {
             HideNativeUI();
             LobbyManager.Instance.StartHost(GetCurrentPlayerName(), DefaultPort);
+            SyncSelectedTankToLobby();
             DrawLobbyPanel();
             RefreshLobbyData();
         }
@@ -183,6 +185,7 @@ namespace SprocketMultiplayer.UI
 
             DrawLobbyPanel();
             LockClientBattleConfigUI();
+            SyncSelectedTankToLobby();
             RefreshLobbyData();
         }
 
@@ -320,9 +323,10 @@ namespace SprocketMultiplayer.UI
                 tankSelectPanelObj.transform.SetParent(contentTransform, false);
 
                 RectTransform rect = tankSelectPanelObj.AddComponent<RectTransform>();
-                rect.anchorMin = new Vector2(0.02f, 0.08f);
+                rect.anchorMin = new Vector2(0.2f, 0.08f);
                 rect.anchorMax = new Vector2(0.2f, 0.92f);
-                rect.sizeDelta = Vector2.zero;
+                rect.pivot = new Vector2(1f, 0.5f);
+                rect.sizeDelta = new Vector2(384f, 0f);
                 rect.anchoredPosition = Vector2.zero;
 
                 Image bgImg = tankSelectPanelObj.AddComponent<Image>();
@@ -341,33 +345,71 @@ namespace SprocketMultiplayer.UI
 
             const int columns = 2;
             const int rows = 10;
-            const float cellWidth = 132f;
+            const float cellWidth = 178f;
             const float cellHeight = 58f;
             const float gapX = 8f;
             const float gapY = 5f;
+            const int pageSize = columns * rows;
             float startX = -((columns - 1) * (cellWidth + gapX)) / 2f;
             float startY = 280f;
 
             TextMeshProUGUI title = CreateTextTMP(parent, "TankListTitle", "SELECT TANK", new Vector2(0, 345), 18, TextAlignmentOptions.Center);
-            title.rectTransform.sizeDelta = new Vector2(260, 32);
+            title.rectTransform.sizeDelta = new Vector2(360, 32);
 
             if (tanks.Count == 0)
             {
                 TextMeshProUGUI emptyText = CreateTextTMP(parent, "TankListEmpty", "No blueprint files found.", new Vector2(0, 0), 18, TextAlignmentOptions.Center);
-                emptyText.rectTransform.sizeDelta = new Vector2(260, 80);
+                emptyText.rectTransform.sizeDelta = new Vector2(340, 80);
                 return;
             }
 
-            int max = Math.Min(tanks.Count, columns * rows);
-            for (int i = 0; i < max; i++)
+            int pageCount = Math.Max(1, (tanks.Count + pageSize - 1) / pageSize);
+            if (tankPage >= pageCount) tankPage = pageCount - 1;
+            if (tankPage < 0) tankPage = 0;
+
+            int start = tankPage * pageSize;
+            int max = Math.Min(tanks.Count, start + pageSize);
+            for (int i = start; i < max; i++)
             {
                 TankInfo tank = tanks[i];
                 TankInfo captured = tank;
-                int row = i / columns;
-                int column = i % columns;
+                int slot = i - start;
+                int row = slot / columns;
+                int column = slot % columns;
                 Vector2 pos = new Vector2(startX + column * (cellWidth + gapX), startY - row * (cellHeight + gapY));
                 tankButtonObjects.Add(CreateTankButton(parent, "Tank_" + i, tank, pos, new Vector2(cellWidth, cellHeight), () => SelectTank(captured)));
             }
+
+            if (pageCount > 1)
+            {
+                CreateSmallButton(parent, "Btn_TankPagePrev", "<", new Vector2(-95, -345), new Vector2(72, 34), () =>
+                {
+                    if (tankPage <= 0) return;
+                    tankPage--;
+                    RebuildTankGrid();
+                });
+
+                TextMeshProUGUI pageText = CreateTextTMP(parent, "TankPageText", $"{tankPage + 1}/{pageCount}", new Vector2(0, -345), 14, TextAlignmentOptions.Center);
+                pageText.rectTransform.sizeDelta = new Vector2(80, 34);
+
+                CreateSmallButton(parent, "Btn_TankPageNext", ">", new Vector2(95, -345), new Vector2(72, 34), () =>
+                {
+                    if (tankPage >= pageCount - 1) return;
+                    tankPage++;
+                    RebuildTankGrid();
+                });
+            }
+        }
+
+        private static void RebuildTankGrid()
+        {
+            if (tankSelectPanelObj == null) return;
+
+            Transform parent = tankSelectPanelObj.transform;
+            for (int i = parent.childCount - 1; i >= 0; i--)
+                UnityEngine.Object.Destroy(parent.GetChild(i).gameObject);
+
+            CreateTankGrid(parent);
         }
 
         private static GameObject CreateTankButton(Transform parent, string name, TankInfo tank, Vector2 pos, Vector2 size, Action onClick)
@@ -404,7 +446,7 @@ namespace SprocketMultiplayer.UI
             iconRect.anchorMin = new Vector2(0.5f, 1f);
             iconRect.anchorMax = new Vector2(0.5f, 1f);
             iconRect.anchoredPosition = new Vector2(0, -22);
-            iconRect.sizeDelta = new Vector2(118, 36);
+            iconRect.sizeDelta = new Vector2(160, 36);
 
             Image iconImg = iconObj.AddComponent<Image>();
             iconImg.preserveAspect = true;
@@ -439,6 +481,23 @@ namespace SprocketMultiplayer.UI
             return obj;
         }
 
+        private static GameObject CreateSmallButton(Transform parent, string name, string text, Vector2 pos, Vector2 size, Action onClick)
+        {
+            GameObject obj = CreateNativeStyleButton(parent, name, text, pos, onClick);
+            RectTransform rect = obj.GetComponent<RectTransform>();
+            if (rect != null)
+                rect.sizeDelta = size;
+
+            TextMeshProUGUI tmp = obj.GetComponentInChildren<TextMeshProUGUI>();
+            if (tmp != null)
+            {
+                tmp.fontSize = 16;
+                tmp.rectTransform.sizeDelta = size;
+            }
+
+            return obj;
+        }
+
         private static void SelectTank(TankInfo tank)
         {
             SelectedTank = tank;
@@ -447,6 +506,17 @@ namespace SprocketMultiplayer.UI
             LobbyManager.Instance.SelectTank(tank);
             UpdateTankPreview();
             RefreshLobbyData();
+        }
+
+        private static void SyncSelectedTankToLobby()
+        {
+            if (SelectedTank == null || NetworkManager.Instance == null)
+                return;
+
+            if (!NetworkManager.Instance.IsHost && !NetworkManager.Instance.IsClient)
+                return;
+
+            LobbyManager.Instance.SelectTank(SelectedTank);
         }
 
         private static void UpdateTankPreview()

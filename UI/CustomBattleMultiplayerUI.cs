@@ -16,341 +16,583 @@ namespace SprocketMultiplayer.UI
     {
         private const int DefaultPort = 7777;
 
-        private static GameObject injectedRoot;
-        private static GameObject lobbyPanel;
-        private static GameObject connectPanel;
+        private static GameObject connectPanelObj;
+        private static GameObject lobbyPanelObj;
         private static TextMeshProUGUI rosterText;
-        private static TextMeshProUGUI statusText;
-        private static TextMeshProUGUI mapText;
-        private static TextMeshProUGUI selectedTankText;
-        private static TextMeshProUGUI actionText;
+        private static TextMeshProUGUI actionBtnText;
+        private static TextMeshProUGUI previewNameText;
+        private static Image previewImage;
         private static TMP_InputField nameInput;
-        private static TMP_InputField ipInput;
-        private static Transform tankListContent;
+
+        private static object mapMonitorCoroutine;
+        private static string lastTankName = "None";
+        private static string lastTankIconPath = "";
+        private static int lastMapIndex = -1;
 
         private static readonly List<TankInfo> tanks = new List<TankInfo>();
         private static readonly string[] sceneNames = { "Railway" };
 
         public static TankInfo SelectedTank { get; private set; }
+
         public static string PlayerName
         {
             get => PlayerPrefs.GetString("SprocketMP.PlayerName", "Player" + UnityEngine.Random.Range(1000, 9999));
             private set => PlayerPrefs.SetString("SprocketMP.PlayerName", value);
         }
 
-        public static bool IsInjected => injectedRoot != null;
+        public static bool IsInjected =>
+            GameObject.Find("Root/Canvas/Content/Team config/Btn_Host_Injected") != null;
 
         public static bool ShouldInject()
         {
-            if (IsInjected)
-                return false;
-
-            return GameObject.Find("Root/Canvas/Content/Team config") != null &&
+            return !IsInjected &&
+                   GameObject.Find("Root/Canvas/Content/Team config") != null &&
                    GameObject.Find("Root/Canvas/Content/Map") != null;
         }
 
         public static void Inject()
         {
-            if (injectedRoot != null) return;
-
-            GameObject content = GameObject.Find("Root/Canvas/Content");
-            if (content == null)
-            {
-                MelonLogger.Warning("[CustomBattleUI] Root/Canvas/Content not found.");
-                return;
-            }
-
-            LockWeatherControls();
-
-            injectedRoot = new GameObject("SprocketMP_InjectedRoot");
-            injectedRoot.transform.SetParent(content.transform, false);
-            var rect = injectedRoot.AddComponent<RectTransform>();
-            rect.anchorMin = new Vector2(0, 0);
-            rect.anchorMax = new Vector2(1, 1);
-            rect.offsetMin = Vector2.zero;
-            rect.offsetMax = Vector2.zero;
-
-            BuildEntryControls(injectedRoot.transform);
-            BuildConnectPanel(injectedRoot.transform);
-            BuildLobbyPanel(injectedRoot.transform);
-
-            ReloadTanks();
-            Refresh();
-
-            MelonLogger.Msg("[CustomBattleUI] Multiplayer UI injected.");
+            InjectMultiplayerOptions();
         }
 
-        public static void Refresh()
+        public static void InjectMultiplayerOptions()
         {
-            if (rosterText != null)
-                rosterText.text = BuildRosterText();
+            GameObject contentObj = GameObject.Find("Root/Canvas/Content/Team config");
+            if (contentObj == null || contentObj.transform.Find("Btn_Host_Injected") != null)
+                return;
 
-            if (statusText != null)
-                statusText.text = BuildStatusText();
+            LockWeatherControls();
+            ReloadTanks();
 
-            if (mapText != null)
-                mapText.text = "Map: " + LobbyManager.Instance.SelectedMap;
+            CreateTextTMP(contentObj.transform, "NameLabel_Injected", "PLAYER NAME:", new Vector2(0, 150), 18, TextAlignmentOptions.Center);
 
-            if (selectedTankText != null)
-                selectedTankText.text = SelectedTank == null ? "Tank: None" : "Tank: " + SelectedTank.Name;
+            nameInput = CreateInputFieldTMP(contentObj.transform, "NameInput_Injected", PlayerName, new Vector2(0, 110), 250);
+            nameInput.onEndEdit.AddListener((UnityAction<string>)(val =>
+            {
+                if (!string.IsNullOrWhiteSpace(val))
+                    PlayerName = val.Trim();
+            }));
 
-            if (actionText != null)
-                actionText.text = BuildActionText();
+            CreateNativeStyleButton(contentObj.transform, "Btn_Host_Injected", "HOST MULTIPLAYER", new Vector2(0, 50), OnHostClicked);
+            CreateNativeStyleButton(contentObj.transform, "Btn_Connect_Injected", "CONNECT TO HOST", new Vector2(0, 0), OnConnectClicked);
+
+            if (mapMonitorCoroutine == null)
+                mapMonitorCoroutine = MelonCoroutines.Start(MonitorMapCoroutine());
+
+            MelonLogger.Msg("[Multiplayer] Injected old-style Custom Battle multiplayer UI.");
+        }
+
+        private static IEnumerator MonitorMapCoroutine()
+        {
+            while (true)
+            {
+                if (NetworkManager.Instance != null && NetworkManager.Instance.IsHost)
+                {
+                    GameObject mapObj = GameObject.Find("Root/Canvas/Content/Map");
+                    if (mapObj != null)
+                    {
+                        var dropdowns = mapObj.GetComponentsInChildren<Il2CppDynamicGUI.DropDown>();
+                        if (dropdowns != null && dropdowns.Count >= 1)
+                        {
+                            int mapIndex = dropdowns[0].SelectedIndex;
+                            if (mapIndex != lastMapIndex)
+                            {
+                                lastMapIndex = mapIndex;
+                                ApplyMapSelection(mapIndex);
+                                LobbyManager.Instance.SetMap(mapIndex, ResolveSceneName(mapIndex));
+                            }
+                        }
+                    }
+                }
+
+                LockWeatherControls();
+                yield return new WaitForSeconds(0.5f);
+            }
         }
 
         public static void ApplyMapSelection(int index)
         {
-            if (index < 0 || index >= sceneNames.Length)
+            if (index < 0)
                 index = 0;
 
+            GameObject mapObj = GameObject.Find("Root/Canvas/Content/Map");
+            if (mapObj != null)
+            {
+                var dropdowns = mapObj.GetComponentsInChildren<Il2CppDynamicGUI.DropDown>();
+                if (dropdowns != null && dropdowns.Count >= 1 && dropdowns[0].SelectedIndex != index)
+                {
+                    dropdowns[0].SetHovered(index);
+                    dropdowns[0].SetHoveredAsSelected();
+                }
+            }
+
             LobbyManager.Instance.SelectedMapIndex = index;
-            LobbyManager.Instance.SelectedMap = sceneNames[index];
+            LobbyManager.Instance.SelectedMap = ResolveSceneName(index);
             Refresh();
         }
 
-        public static void CloseForSceneLoad()
+        private static string ResolveSceneName(int index)
         {
-            if (connectPanel != null) connectPanel.SetActive(false);
-            if (lobbyPanel != null) lobbyPanel.SetActive(false);
-            if (injectedRoot != null) injectedRoot.SetActive(false);
+            if (index >= 0 && index < sceneNames.Length)
+                return sceneNames[index];
+
+            return "Railway";
+        }
+
+        public static void Refresh()
+        {
+            RefreshLobbyData();
         }
 
         public static void ShowNativeUI()
         {
-            if (injectedRoot != null) injectedRoot.SetActive(true);
-            SetNativeBattleUiVisible(true);
+            ForceCloseAndShowNative();
         }
 
-        private static void BuildEntryControls(Transform parent)
+        public static void CloseForSceneLoad()
         {
-            var panel = CreatePanel("MP_EntryPanel", parent, new Vector2(0.02f, 0.54f), new Vector2(0.28f, 0.96f));
-
-            CreateText(panel.transform, "Title", "MULTIPLAYER", new Vector2(0, -24), 28);
-            CreateText(panel.transform, "NameLabel", "PLAYER NAME", new Vector2(0, -72), 16);
-            nameInput = CreateInput(panel.transform, "NameInput", PlayerName, new Vector2(0, -108), 230);
-            nameInput.onEndEdit.AddListener((UnityAction<string>)(value =>
-            {
-                if (!string.IsNullOrWhiteSpace(value))
-                    PlayerName = value.Trim();
-            }));
-
-            CreateButton(panel.transform, "HostButton", "HOST MULTIPLAYER", new Vector2(0, -166), OnHostClicked, 230);
-            CreateButton(panel.transform, "JoinButton", "CONNECT TO HOST", new Vector2(0, -224), OnJoinClicked, 230);
-        }
-
-        private static void BuildConnectPanel(Transform parent)
-        {
-            connectPanel = CreatePanel("MP_ConnectPanel", parent, new Vector2(0.31f, 0.54f), new Vector2(0.62f, 0.86f));
-            CreateText(connectPanel.transform, "Title", "CONNECT", new Vector2(0, -26), 26);
-            ipInput = CreateInput(connectPanel.transform, "IpInput", "127.0.0.1", new Vector2(0, -86), 250);
-            CreateButton(connectPanel.transform, "ConnectButton", "CONNECT", new Vector2(0, -148), () =>
-            {
-                string ip = string.IsNullOrWhiteSpace(ipInput.text) ? "127.0.0.1" : ipInput.text.Trim();
-                SetNativeBattleUiVisible(false);
-                LobbyManager.Instance.JoinHost(GetCurrentPlayerName(), ip, DefaultPort);
-                connectPanel.SetActive(false);
-                lobbyPanel.SetActive(true);
-                Refresh();
-            });
-            CreateButton(connectPanel.transform, "CancelButton", "CANCEL", new Vector2(0, -206), () =>
-            {
-                connectPanel.SetActive(false);
-                SetNativeBattleUiVisible(true);
-                Refresh();
-            });
-            connectPanel.SetActive(false);
-        }
-
-        private static void BuildLobbyPanel(Transform parent)
-        {
-            lobbyPanel = CreatePanel("MP_LobbyPanel", parent, new Vector2(0.31f, 0.08f), new Vector2(0.96f, 0.96f));
-
-            CreateText(lobbyPanel.transform, "Title", "MULTIPLAYER LOBBY", new Vector2(0, -28), 30);
-            mapText = CreateText(lobbyPanel.transform, "MapText", "Map: Railway", new Vector2(-210, -72), 20);
-            CreateButton(lobbyPanel.transform, "MapRailway", "RAILWAY", new Vector2(-210, -122), () =>
-            {
-                LobbyManager.Instance.SetMap(0, sceneNames[0]);
-            });
-
-            CreateText(lobbyPanel.transform, "WeatherLock", "Weather: Default (locked)", new Vector2(170, -72), 18);
-
-            var rosterBg = CreatePanel("Roster", lobbyPanel.transform, new Vector2(0.04f, 0.10f), new Vector2(0.48f, 0.66f));
-            rosterText = CreateText(rosterBg.transform, "RosterText", "", new Vector2(0, -18), 18);
-            rosterText.alignment = TextAlignmentOptions.TopLeft;
-            rosterText.rectTransform.sizeDelta = new Vector2(330, 250);
-
-            var tankBg = CreatePanel("Tanks", lobbyPanel.transform, new Vector2(0.52f, 0.22f), new Vector2(0.96f, 0.66f));
-            CreateText(tankBg.transform, "TankTitle", "TANKS", new Vector2(0, -20), 22);
-            BuildTankList(tankBg.transform);
-            selectedTankText = CreateText(lobbyPanel.transform, "SelectedTank", "Tank: None", new Vector2(190, -420), 18);
-
-            actionText = null;
-            GameObject actionButton = CreateButton(lobbyPanel.transform, "ActionButton", "READY", new Vector2(-120, -420), OnActionClicked);
-            actionText = actionButton.GetComponentInChildren<TextMeshProUGUI>();
-            CreateButton(lobbyPanel.transform, "LeaveButton", "LEAVE", new Vector2(-120, -480), () =>
-            {
-                LobbyManager.Instance.LeaveLobby();
-                lobbyPanel.SetActive(false);
-                connectPanel.SetActive(false);
-                SetNativeBattleUiVisible(true);
-                Refresh();
-            });
-
-            statusText = CreateText(lobbyPanel.transform, "Status", "", new Vector2(190, -480), 16);
-            lobbyPanel.SetActive(false);
-        }
-
-        private static void BuildTankList(Transform parent)
-        {
-            var scrollGO = new GameObject("TankScroll");
-            scrollGO.transform.SetParent(parent, false);
-            var scrollRect = scrollGO.AddComponent<RectTransform>();
-            scrollRect.anchorMin = new Vector2(0.08f, 0.08f);
-            scrollRect.anchorMax = new Vector2(0.92f, 0.78f);
-            scrollRect.offsetMin = Vector2.zero;
-            scrollRect.offsetMax = Vector2.zero;
-            var scroll = scrollGO.AddComponent<ScrollRect>();
-            scroll.horizontal = false;
-
-            var viewport = new GameObject("Viewport");
-            viewport.transform.SetParent(scrollGO.transform, false);
-            viewport.AddComponent<Image>().color = new Color(0f, 0f, 0f, 0.25f);
-            viewport.AddComponent<Mask>().showMaskGraphic = false;
-            var viewportRect = viewport.GetComponent<RectTransform>();
-            viewportRect.anchorMin = Vector2.zero;
-            viewportRect.anchorMax = Vector2.one;
-            viewportRect.offsetMin = Vector2.zero;
-            viewportRect.offsetMax = Vector2.zero;
-
-            var content = new GameObject("Content");
-            content.transform.SetParent(viewport.transform, false);
-            tankListContent = content.transform;
-            var contentRect = content.AddComponent<RectTransform>();
-            contentRect.anchorMin = new Vector2(0, 1);
-            contentRect.anchorMax = new Vector2(1, 1);
-            contentRect.pivot = new Vector2(0.5f, 1);
-            contentRect.anchoredPosition = Vector2.zero;
-
-            var layout = content.AddComponent<VerticalLayoutGroup>();
-            layout.spacing = 6;
-            layout.childControlHeight = false;
-            layout.childControlWidth = true;
-            layout.childForceExpandWidth = true;
-            content.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-
-            scroll.viewport = viewportRect;
-            scroll.content = contentRect;
-        }
-
-        private static void ReloadTanks()
-        {
-            tanks.Clear();
-            tanks.AddRange(TankDatabase.LoadTanks());
-
-            if (tankListContent == null) return;
-
-            foreach (Transform child in tankListContent)
-                UnityEngine.Object.Destroy(child.gameObject);
-
-            foreach (TankInfo tank in tanks)
-            {
-                TankInfo captured = tank;
-                CreateButton(tankListContent, "Tank_" + tank.Name, tank.Name, Vector2.zero, () =>
-                {
-                    SelectedTank = captured;
-                    LobbyManager.Instance.SelectTank(captured);
-                }, 280, 36);
-            }
+            CloseAllUIForBattle();
         }
 
         private static void OnHostClicked()
         {
-            SetNativeBattleUiVisible(false);
-            lobbyPanel.SetActive(true);
-            connectPanel.SetActive(false);
+            HideNativeUI();
             LobbyManager.Instance.StartHost(GetCurrentPlayerName(), DefaultPort);
+            DrawLobbyPanel();
+            RefreshLobbyData();
         }
 
-        private static void OnJoinClicked()
+        private static void OnConnectClicked()
         {
-            SetNativeBattleUiVisible(false);
-            connectPanel.SetActive(true);
-            lobbyPanel.SetActive(false);
+            HideNativeUI();
+            DrawConnectPanel();
+        }
+
+        private static void OnJoinConfirmClicked(string ip)
+        {
+            LobbyManager.Instance.JoinHost(GetCurrentPlayerName(), ip, DefaultPort);
+
+            if (connectPanelObj != null)
+                connectPanelObj.SetActive(false);
+
+            DrawLobbyPanel();
+            LockClientBattleConfigUI();
+            RefreshLobbyData();
         }
 
         private static void OnActionClicked()
         {
             if (SelectedTank == null)
             {
-                MelonLogger.Warning("[CustomBattleUI] Select a tank before ready/start.");
+                MelonLogger.Warning("[Multiplayer] SELECT A TANK FIRST!");
                 return;
             }
 
-            if (NetworkManager.Instance.IsHost)
+            if (NetworkManager.Instance != null && NetworkManager.Instance.IsHost)
                 LobbyManager.Instance.StartMatch();
-            else if (NetworkManager.Instance.IsClient)
+            else if (NetworkManager.Instance != null && NetworkManager.Instance.IsClient)
                 LobbyManager.Instance.SetReady(!GetLocalReadyState());
 
-            Refresh();
+            RefreshLobbyData();
         }
 
-        private static bool GetLocalReadyState()
+        private static void DrawConnectPanel()
         {
-            string name = NetworkManager.Instance?.LocalNickname;
-            return !string.IsNullOrEmpty(name) &&
-                   LobbyManager.Instance.Players.TryGetValue(name, out var player) &&
-                   player.Ready;
-        }
+            GameObject contentObj = GameObject.Find("Root/Canvas/Content");
+            if (contentObj == null) return;
 
-        private static string GetCurrentPlayerName()
-        {
-            string value = nameInput != null ? nameInput.text : PlayerName;
-            if (string.IsNullOrWhiteSpace(value))
-                value = PlayerName;
-
-            PlayerName = value.Trim();
-            return PlayerName;
-        }
-
-        private static string BuildRosterText()
-        {
-            var players = LobbyManager.Instance.Players.Values.ToList();
-            if (players.Count == 0)
-                return "No players.";
-
-            return string.Join("\n", players.Select(p =>
+            if (connectPanelObj == null)
             {
-                string role = NetworkManager.Instance != null && NetworkManager.Instance.IsHost && p.Name == NetworkManager.Instance.HostNickname
-                    ? "HOST"
-                    : (p.Ready ? "READY" : "WAIT");
-                return $"[{role}] {p.Name} - {p.TankName}";
-            }));
-        }
+                connectPanelObj = new GameObject("MP_ConnectPanel");
+                connectPanelObj.transform.SetParent(contentObj.transform, false);
 
-        private static string BuildStatusText()
-        {
-            if (NetworkManager.Instance == null || !NetworkManager.Instance.IsActiveMultiplayer)
-                return "Disconnected";
+                RectTransform rect = connectPanelObj.AddComponent<RectTransform>();
+                rect.anchorMin = new Vector2(0.2f, 0.08f);
+                rect.anchorMax = new Vector2(0.8f, 0.92f);
+                rect.sizeDelta = Vector2.zero;
+                rect.anchoredPosition = Vector2.zero;
 
-            if (NetworkManager.Instance.IsHost)
-                return $"Host on port {NetworkManager.Instance.CurrentPort}";
+                Image bgImg = connectPanelObj.AddComponent<Image>();
+                bgImg.color = new Color(0.12f, 0.12f, 0.12f, 0.98f);
+                connectPanelObj.AddComponent<Outline>().effectColor = Color.black;
 
-            return $"Client -> {NetworkManager.Instance.CurrentIP}:{NetworkManager.Instance.CurrentPort}";
-        }
+                CreateTextTMP(connectPanelObj.transform, "Title", "JOIN SERVER", new Vector2(0, 200), 36, TextAlignmentOptions.Center);
 
-        private static string BuildActionText()
-        {
-            if (NetworkManager.Instance == null || !NetworkManager.Instance.IsActiveMultiplayer)
-                return "READY";
+                CreateNativeStyleButton(connectPanelObj.transform, "Btn_JoinLocal", "JOIN 127.0.0.1", new Vector2(0, 50), () => OnJoinConfirmClicked("127.0.0.1"));
 
-            if (NetworkManager.Instance.IsHost)
-            {
-                int total = LobbyManager.Instance.Players.Count;
-                int ready = LobbyManager.Instance.Players.Values.Count(p => p.Ready && !string.IsNullOrEmpty(p.TankHash));
-                return total > 0 && ready == total ? "START" : $"WAIT ({ready}/{total})";
+                CreateNativeStyleButton(connectPanelObj.transform, "Btn_Cancel", "CANCEL", new Vector2(0, -100), () =>
+                {
+                    connectPanelObj.SetActive(false);
+                    ShowNativeOnly();
+                });
             }
 
-            return GetLocalReadyState() ? "CANCEL READY" : "READY";
+            connectPanelObj.SetActive(true);
+        }
+
+        private static void DrawLobbyPanel()
+        {
+            GameObject contentObj = GameObject.Find("Root/Canvas/Content");
+            if (contentObj == null) return;
+
+            if (lobbyPanelObj == null)
+            {
+                lobbyPanelObj = new GameObject("MP_LobbyPanel");
+                lobbyPanelObj.transform.SetParent(contentObj.transform, false);
+
+                RectTransform rect = lobbyPanelObj.AddComponent<RectTransform>();
+                rect.anchorMin = new Vector2(0.2f, 0.08f);
+                rect.anchorMax = new Vector2(0.8f, 0.92f);
+                rect.sizeDelta = Vector2.zero;
+                rect.anchoredPosition = Vector2.zero;
+
+                Image bgImg = lobbyPanelObj.AddComponent<Image>();
+                bgImg.color = new Color(0.12f, 0.12f, 0.12f, 0.98f);
+                lobbyPanelObj.AddComponent<Outline>().effectColor = Color.black;
+
+                CreateTextTMP(lobbyPanelObj.transform, "Title", "MULTIPLAYER ROSTER", new Vector2(0, 300), 40, TextAlignmentOptions.Center);
+
+                GameObject listBgObj = new GameObject("ListBg");
+                listBgObj.transform.SetParent(lobbyPanelObj.transform, false);
+
+                RectTransform listBgRect = listBgObj.AddComponent<RectTransform>();
+                listBgRect.anchoredPosition = new Vector2(-200, 50);
+                listBgRect.sizeDelta = new Vector2(500, 400);
+
+                Image listImg = listBgObj.AddComponent<Image>();
+                listImg.color = new Color(0.05f, 0.05f, 0.05f, 0.9f);
+                listBgObj.AddComponent<Outline>().effectColor = Color.black;
+
+                rosterText = CreateTextTMP(listBgObj.transform, "RosterText", "Loading...", new Vector2(0, 0), 24, TextAlignmentOptions.TopLeft);
+                rosterText.rectTransform.sizeDelta = new Vector2(460, 360);
+
+                GameObject previewObj = new GameObject("TankPreview");
+                previewObj.transform.SetParent(lobbyPanelObj.transform, false);
+
+                RectTransform previewRect = previewObj.AddComponent<RectTransform>();
+                previewRect.anchorMin = new Vector2(0.5f, 0.5f);
+                previewRect.anchorMax = new Vector2(0.5f, 0.5f);
+                previewRect.anchoredPosition = new Vector2(300, 50);
+                previewRect.sizeDelta = new Vector2(250, 140);
+
+                Image prevBgImg = previewObj.AddComponent<Image>();
+                prevBgImg.color = new Color(0.05f, 0.05f, 0.05f, 1f);
+                previewObj.AddComponent<Outline>().effectColor = Color.black;
+
+                GameObject imgObj = new GameObject("Image");
+                imgObj.transform.SetParent(previewObj.transform, false);
+
+                RectTransform imgRect = imgObj.AddComponent<RectTransform>();
+                imgRect.anchoredPosition = Vector2.zero;
+                imgRect.sizeDelta = new Vector2(240, 130);
+
+                previewImage = imgObj.AddComponent<Image>();
+                previewImage.preserveAspect = true;
+
+                previewNameText = CreateTextTMP(lobbyPanelObj.transform, "PreviewName", "No Tank Selected", new Vector2(300, -40), 22, TextAlignmentOptions.Center);
+                previewNameText.rectTransform.sizeDelta = new Vector2(250, 40);
+                previewNameText.enableWordWrapping = false;
+                previewNameText.overflowMode = TextOverflowModes.Ellipsis;
+
+                CreateTankPicker(lobbyPanelObj.transform);
+
+                string btnTxt = NetworkManager.Instance != null && NetworkManager.Instance.IsHost ? "START MATCH" : "READY";
+                GameObject actionBtn = CreateNativeStyleButton(lobbyPanelObj.transform, "Btn_Action", btnTxt, new Vector2(300, -110), OnActionClicked);
+                actionBtnText = actionBtn.GetComponentInChildren<TextMeshProUGUI>();
+
+                CreateNativeStyleButton(lobbyPanelObj.transform, "Btn_Disconnect", "DISCONNECT", new Vector2(300, -210), OnDisconnectClicked);
+            }
+
+            lobbyPanelObj.SetActive(true);
+            UpdateTankPreview();
+        }
+
+        private static void CreateTankPicker(Transform parent)
+        {
+            GameObject pickerObj = new GameObject("TankPicker");
+            pickerObj.transform.SetParent(parent, false);
+
+            RectTransform rect = pickerObj.AddComponent<RectTransform>();
+            rect.anchorMin = new Vector2(0.5f, 0.5f);
+            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = new Vector2(300, -300);
+            rect.sizeDelta = new Vector2(280, 150);
+
+            Image bgImg = pickerObj.AddComponent<Image>();
+            bgImg.color = new Color(0.05f, 0.05f, 0.05f, 0.9f);
+            pickerObj.AddComponent<Outline>().effectColor = Color.black;
+
+            CreateTextTMP(pickerObj.transform, "TankPickerTitle", "TANKS", new Vector2(0, 50), 20, TextAlignmentOptions.Center);
+
+            int y = 5;
+            foreach (TankInfo tank in tanks.Take(3))
+            {
+                TankInfo captured = tank;
+                CreateNativeStyleButton(pickerObj.transform, "Tank_" + tank.Name, tank.Name, new Vector2(0, y), () => SelectTank(captured));
+                y -= 48;
+            }
+        }
+
+        private static void SelectTank(TankInfo tank)
+        {
+            SelectedTank = tank;
+            lastTankName = tank?.Name ?? "None";
+            lastTankIconPath = tank?.ImagePath ?? "";
+            LobbyManager.Instance.SelectTank(tank);
+            UpdateTankPreview();
+            RefreshLobbyData();
+        }
+
+        private static void UpdateTankPreview()
+        {
+            if (previewNameText != null)
+                previewNameText.text = lastTankName == "None" ? "<color=#FF0000>No Tank Selected</color>" : lastTankName;
+
+            if (previewImage == null) return;
+
+            Sprite sp = LoadSpriteFromFile(lastTankIconPath);
+            if (sp != null)
+            {
+                previewImage.sprite = sp;
+                previewImage.color = Color.white;
+            }
+            else
+            {
+                previewImage.sprite = null;
+                previewImage.color = new Color(0, 0, 0, 0);
+            }
+        }
+
+        private static Sprite LoadSpriteFromFile(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                return null;
+
+            try
+            {
+                byte[] fileData = File.ReadAllBytes(path);
+                Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                tex.filterMode = FilterMode.Bilinear;
+                UnityEngine.ImageConversion.LoadImage(tex, fileData);
+
+                return Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        public static void RefreshLobbyData()
+        {
+            if (rosterText != null)
+            {
+                string listStr = "";
+                foreach (var p in LobbyManager.Instance.Players.Values)
+                {
+                    string readyIcon = p.Ready ? "<color=#00FF00>[READY]</color>" : "<color=#FF0000>[WAITING]</color>";
+
+                    if (NetworkManager.Instance != null && NetworkManager.Instance.IsHost && p.Name == NetworkManager.Instance.HostNickname)
+                        readyIcon = "<color=#FFAA00>[HOST]</color>";
+
+                    listStr += $"{readyIcon} {p.Name} - <size=18>{p.TankName}</size>\n";
+                }
+                rosterText.text = string.IsNullOrEmpty(listStr) ? "No players." : listStr;
+            }
+
+            if (actionBtnText != null)
+            {
+                if (NetworkManager.Instance != null && NetworkManager.Instance.IsHost)
+                {
+                    int total = LobbyManager.Instance.Players.Count;
+                    int ready = LobbyManager.Instance.Players.Values.Count(p => p.Ready && !string.IsNullOrEmpty(p.TankHash));
+                    actionBtnText.text = total > 0 && ready == total ? "START MATCH" : $"WAITING ({ready}/{total})";
+                }
+                else
+                {
+                    actionBtnText.text = GetLocalReadyState() ? "CANCEL READY" : "READY";
+                }
+            }
+        }
+
+        private static void OnDisconnectClicked()
+        {
+            LobbyManager.Instance.LeaveLobby();
+
+            if (lobbyPanelObj != null)
+                lobbyPanelObj.SetActive(false);
+
+            ShowNativeOnly();
+        }
+
+        private static TMP_InputField CreateInputFieldTMP(Transform parent, string name, string defaultText, Vector2 pos, float width)
+        {
+            GameObject obj = new GameObject(name);
+            obj.transform.SetParent(parent, false);
+
+            RectTransform rect = obj.AddComponent<RectTransform>();
+            rect.anchoredPosition = pos;
+            rect.sizeDelta = new Vector2(width, 40);
+
+            Image bg = obj.AddComponent<Image>();
+            bg.color = new Color(0.1f, 0.1f, 0.1f, 1f);
+            obj.AddComponent<Outline>().effectColor = Color.black;
+
+            GameObject textObj = new GameObject("Text");
+            textObj.transform.SetParent(obj.transform, false);
+
+            RectTransform textRect = textObj.AddComponent<RectTransform>();
+            textRect.anchorMin = Vector2.zero;
+            textRect.anchorMax = Vector2.one;
+            textRect.offsetMin = new Vector2(10, 0);
+            textRect.offsetMax = new Vector2(-10, 0);
+
+            TextMeshProUGUI tmp = textObj.AddComponent<TextMeshProUGUI>();
+            tmp.fontSize = 20;
+            tmp.color = Color.white;
+            tmp.alignment = TextAlignmentOptions.Center;
+            tmp.enableWordWrapping = false;
+
+            TMP_InputField input = obj.AddComponent<TMP_InputField>();
+            input.textComponent = tmp;
+            input.targetGraphic = bg;
+            input.interactable = true;
+            input.text = defaultText;
+
+            if (UnityEngine.EventSystems.EventSystem.current == null)
+            {
+                GameObject esObj = new GameObject("EventSystem_Injected");
+                UnityEngine.Object.DontDestroyOnLoad(esObj);
+                esObj.AddComponent<UnityEngine.EventSystems.EventSystem>();
+                esObj.AddComponent<UnityEngine.EventSystems.StandaloneInputModule>();
+            }
+
+            return input;
+        }
+
+        private static GameObject CreateNativeStyleButton(Transform parent, string name, string text, Vector2 pos, Action onClick)
+        {
+            GameObject obj = new GameObject(name);
+            obj.transform.SetParent(parent, false);
+
+            RectTransform rect = obj.AddComponent<RectTransform>();
+            rect.anchorMin = new Vector2(0.5f, 0.5f);
+            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = pos;
+            rect.sizeDelta = new Vector2(250, 50);
+
+            Image img = obj.AddComponent<Image>();
+            img.color = Color.white;
+
+            Button btn = obj.AddComponent<Button>();
+            ColorBlock cb = btn.colors;
+            cb.normalColor = new Color(0.18f, 0.18f, 0.18f, 1f);
+            cb.highlightedColor = new Color(0.28f, 0.28f, 0.28f, 1f);
+            cb.pressedColor = new Color(0.1f, 0.1f, 0.1f, 1f);
+            cb.selectedColor = cb.normalColor;
+            cb.colorMultiplier = 1f;
+            cb.fadeDuration = 0.1f;
+            btn.colors = cb;
+
+            btn.onClick.AddListener((UnityAction)(() => onClick?.Invoke()));
+
+            obj.AddComponent<Outline>().effectColor = new Color(0f, 0f, 0f, 0.8f);
+
+            GameObject textObj = new GameObject("Txt");
+            textObj.transform.SetParent(obj.transform, false);
+
+            RectTransform textRect = textObj.AddComponent<RectTransform>();
+            textRect.anchoredPosition = Vector2.zero;
+            textRect.sizeDelta = rect.sizeDelta;
+
+            TextMeshProUGUI tmp = textObj.AddComponent<TextMeshProUGUI>();
+            tmp.text = text;
+            tmp.fontSize = 20;
+            tmp.color = Color.white;
+            tmp.alignment = TextAlignmentOptions.Center;
+
+            return obj;
+        }
+
+        private static TextMeshProUGUI CreateTextTMP(Transform parent, string name, string text, Vector2 pos, float size, TextAlignmentOptions align)
+        {
+            GameObject obj = new GameObject(name);
+            obj.transform.SetParent(parent, false);
+
+            RectTransform rect = obj.AddComponent<RectTransform>();
+            rect.anchorMin = new Vector2(0.5f, 0.5f);
+            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = pos;
+            rect.sizeDelta = new Vector2(600, 80);
+
+            TextMeshProUGUI tmp = obj.AddComponent<TextMeshProUGUI>();
+            tmp.text = text;
+            tmp.fontSize = size;
+            tmp.color = Color.white;
+            tmp.alignment = align;
+
+            return tmp;
+        }
+
+        private static readonly string[] PathsToHide =
+        {
+            "Root/Canvas/Content/Roster",
+            "Root/Canvas/Content/Unit config",
+            "Root/Canvas/Content/Team config",
+            "Root/Canvas/Content/Teams",
+            "Root/Canvas/Content/Bar",
+            "Root/Canvas/Content/Map/Confirm",
+            "Root/Canvas/Content/Team config/NameLabel_Injected",
+            "Root/Canvas/Content/Team config/NameInput_Injected"
+        };
+
+        private static void HideNativeUI()
+        {
+            foreach (string path in PathsToHide)
+            {
+                GameObject targetObj = GameObject.Find(path);
+                if (targetObj != null)
+                    targetObj.SetActive(false);
+            }
+
+            LockWeatherControls();
+        }
+
+        private static void ShowNativeOnly()
+        {
+            foreach (string path in PathsToHide)
+            {
+                Transform targetTransform = GameObject.Find("Root/Canvas/Content")?.transform.Find(path.Replace("Root/Canvas/Content/", ""));
+                if (targetTransform != null)
+                    targetTransform.gameObject.SetActive(true);
+            }
+
+            LockWeatherControls();
+        }
+
+        public static void ForceCloseAndShowNative()
+        {
+            if (connectPanelObj != null) connectPanelObj.SetActive(false);
+            if (lobbyPanelObj != null) lobbyPanelObj.SetActive(false);
+            ShowNativeOnly();
+        }
+
+        public static void CloseAllUIForBattle()
+        {
+            if (connectPanelObj != null) connectPanelObj.SetActive(false);
+            if (lobbyPanelObj != null) lobbyPanelObj.SetActive(false);
+        }
+
+        public static void LockClientBattleConfigUI()
+        {
+            GameObject mapObj = GameObject.Find("Root/Canvas/Content/Map");
+            if (mapObj != null)
+            {
+                var cg = mapObj.GetComponent<CanvasGroup>() ?? mapObj.AddComponent<CanvasGroup>();
+                cg.interactable = false;
+                cg.blocksRaycasts = false;
+                cg.alpha = 0.6f;
+            }
         }
 
         private static void LockWeatherControls()
@@ -377,128 +619,28 @@ namespace SprocketMultiplayer.UI
             }
         }
 
-        private static void SetNativeBattleUiVisible(bool visible)
+        private static void ReloadTanks()
         {
-            string[] paths =
-            {
-                "Root/Canvas/Content/Roster",
-                "Root/Canvas/Content/Unit config",
-                "Root/Canvas/Content/Team config",
-                "Root/Canvas/Content/Teams",
-                "Root/Canvas/Content/Bar",
-                "Root/Canvas/Content/Map/Confirm"
-            };
-
-            foreach (string path in paths)
-            {
-                GameObject target = GameObject.Find(path);
-                if (target != null)
-                    target.SetActive(visible);
-            }
-
-            LockWeatherControls();
+            tanks.Clear();
+            tanks.AddRange(TankDatabase.LoadTanks());
         }
 
-        private static GameObject CreatePanel(string name, Transform parent, Vector2 anchorMin, Vector2 anchorMax)
+        private static string GetCurrentPlayerName()
         {
-            var go = new GameObject(name);
-            go.transform.SetParent(parent, false);
-            var rect = go.AddComponent<RectTransform>();
-            rect.anchorMin = anchorMin;
-            rect.anchorMax = anchorMax;
-            rect.offsetMin = Vector2.zero;
-            rect.offsetMax = Vector2.zero;
-            var img = go.AddComponent<Image>();
-            img.color = new Color(0.08f, 0.08f, 0.08f, 0.92f);
-            go.AddComponent<Outline>().effectColor = Color.black;
-            return go;
+            string value = nameInput != null ? nameInput.text : PlayerName;
+            if (string.IsNullOrWhiteSpace(value))
+                value = PlayerName;
+
+            PlayerName = value.Trim();
+            return PlayerName;
         }
 
-        private static TextMeshProUGUI CreateText(Transform parent, string name, string text, Vector2 pos, int size)
+        private static bool GetLocalReadyState()
         {
-            var go = new GameObject(name);
-            go.transform.SetParent(parent, false);
-            var tmp = go.AddComponent<TextMeshProUGUI>();
-            tmp.text = text;
-            tmp.fontSize = size;
-            tmp.color = Color.white;
-            tmp.alignment = TextAlignmentOptions.Center;
-            var rect = tmp.rectTransform;
-            rect.anchorMin = new Vector2(0.5f, 1);
-            rect.anchorMax = new Vector2(0.5f, 1);
-            rect.pivot = new Vector2(0.5f, 1);
-            rect.anchoredPosition = pos;
-            rect.sizeDelta = new Vector2(360, 40);
-            return tmp;
-        }
-
-        private static TMP_InputField CreateInput(Transform parent, string name, string text, Vector2 pos, float width)
-        {
-            var go = new GameObject(name);
-            go.transform.SetParent(parent, false);
-            var rect = go.AddComponent<RectTransform>();
-            rect.anchorMin = new Vector2(0.5f, 1);
-            rect.anchorMax = new Vector2(0.5f, 1);
-            rect.pivot = new Vector2(0.5f, 1);
-            rect.anchoredPosition = pos;
-            rect.sizeDelta = new Vector2(width, 38);
-            var bg = go.AddComponent<Image>();
-            bg.color = new Color(0.02f, 0.02f, 0.02f, 0.95f);
-
-            var textGO = new GameObject("Text");
-            textGO.transform.SetParent(go.transform, false);
-            var tmp = textGO.AddComponent<TextMeshProUGUI>();
-            tmp.fontSize = 18;
-            tmp.color = Color.white;
-            tmp.alignment = TextAlignmentOptions.Center;
-            var textRect = tmp.rectTransform;
-            textRect.anchorMin = Vector2.zero;
-            textRect.anchorMax = Vector2.one;
-            textRect.offsetMin = new Vector2(8, 0);
-            textRect.offsetMax = new Vector2(-8, 0);
-
-            var input = go.AddComponent<TMP_InputField>();
-            input.textComponent = tmp;
-            input.targetGraphic = bg;
-            input.text = text;
-            return input;
-        }
-
-        private static GameObject CreateButton(Transform parent, string name, string label, Vector2 pos, Action onClick, float width = 190, float height = 44)
-        {
-            var go = new GameObject(name);
-            go.transform.SetParent(parent, false);
-            var rect = go.AddComponent<RectTransform>();
-            rect.anchorMin = new Vector2(0.5f, 1);
-            rect.anchorMax = new Vector2(0.5f, 1);
-            rect.pivot = new Vector2(0.5f, 1);
-            rect.anchoredPosition = pos;
-            rect.sizeDelta = new Vector2(width, height);
-
-            var img = go.AddComponent<Image>();
-            img.color = Color.white;
-            var button = go.AddComponent<Button>();
-            var colors = button.colors;
-            colors.normalColor = new Color(0.18f, 0.18f, 0.18f, 1f);
-            colors.highlightedColor = new Color(0.28f, 0.28f, 0.28f, 1f);
-            colors.pressedColor = new Color(0.10f, 0.10f, 0.10f, 1f);
-            button.colors = colors;
-            button.onClick.AddListener((UnityAction)(() => onClick?.Invoke()));
-
-            var textGO = new GameObject("Text");
-            textGO.transform.SetParent(go.transform, false);
-            var tmp = textGO.AddComponent<TextMeshProUGUI>();
-            tmp.text = label;
-            tmp.fontSize = 18;
-            tmp.color = Color.white;
-            tmp.alignment = TextAlignmentOptions.Center;
-            var textRect = tmp.rectTransform;
-            textRect.anchorMin = Vector2.zero;
-            textRect.anchorMax = Vector2.one;
-            textRect.offsetMin = Vector2.zero;
-            textRect.offsetMax = Vector2.zero;
-
-            return go;
+            string name = NetworkManager.Instance?.LocalNickname;
+            return !string.IsNullOrEmpty(name) &&
+                   LobbyManager.Instance.Players.TryGetValue(name, out var player) &&
+                   player.Ready;
         }
     }
 }

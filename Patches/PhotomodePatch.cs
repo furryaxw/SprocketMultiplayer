@@ -27,6 +27,7 @@ namespace SprocketMultiplayer.Patches {
 
             if (spawnTriggered) return;
             spawnTriggered = true;
+            SpawnSummaryLog.Info("scenePatch missionScenarioUpdate triggered=yes");
 
             MelonLogger.Msg("[SceneStartPatch] First MissionScenarioGameState.Update in MP — triggering spawn.");
             MelonCoroutines.Start(TriggerSpawnAfterDelay());
@@ -38,10 +39,15 @@ namespace SprocketMultiplayer.Patches {
             yield return null;
 
             MelonLogger.Msg("[SceneStartPatch] Calling MultiplayerManager.OnSceneLoaded()...");
+            SpawnSummaryLog.Info("scenePatch call=MultiplayerManager.OnSceneLoaded");
             if (MultiplayerManager.Instance != null)
                 MultiplayerManager.Instance.OnSceneLoaded();
         }
 
-        public static void Reset() { spawnTriggered = false; }
+        public static void Reset()
+        {
+            spawnTriggered = false;
+            SpawnSummaryLog.Info("scenePatch reset");
+        }
     }
 }

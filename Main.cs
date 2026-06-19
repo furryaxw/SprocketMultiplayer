@@ -98,18 +98,25 @@ namespace SprocketMultiplayer
             MelonLogger.Msg("========================================");
             MelonLogger.Msg($"SCENE CHANGED: {scene.name}");
             MelonLogger.Msg("========================================");
+            SpawnSummaryLog.Info($"sceneChanged old={oldScene} new={scene.name}");
 
             VehicleSpawnHelper.ClearCaches();
 
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsActiveMultiplayer)
             {
+                SpawnSummaryLog.Info("sceneChanged multiplayer=no");
                 return;
             }
 
             if (LobbyManager.Instance.MatchLoading)
             {
                 MelonLogger.Msg("[SceneLoad] Multiplayer scene loaded. Starting spawn dependency sniff.");
+                SpawnSummaryLog.Info($"sceneChanged multiplayer=yes matchLoading=yes scene={scene.name}");
                 SpawnDependencySniffer.Start();
+            }
+            else
+            {
+                SpawnSummaryLog.Info($"sceneChanged multiplayer=yes matchLoading=no scene={scene.name}");
             }
         }
 

@@ -32,12 +32,14 @@ namespace SprocketMultiplayer.Core
         private static IEnumerator Run()
         {
             MelonLogger.Msg("[SpawnSniffer] Starting dependency sniff.");
+            SpawnSummaryLog.Info("deps start");
 
             const int maxSeconds = 30;
             for (int i = 0; i < maxSeconds; i++)
             {
                 var snapshot = Capture();
                 LogSnapshot(snapshot, i + 1);
+                LogSummarySnapshot(snapshot, i + 1);
 
                 if (i == 0)
                     LogDetailedSnapshot(snapshot, "initial");
@@ -45,6 +47,12 @@ namespace SprocketMultiplayer.Core
                 if (snapshot.IsReady)
                 {
                     MelonLogger.Msg("[SpawnSniffer] All required spawn dependencies are available.");
+                    SpawnSummaryLog.Info(
+                        "deps ready " +
+                        $"spawner={DescribeUnityObject(snapshot.OfficialSpawner)} " +
+                        $"techFrame={GetValueTypeName(snapshot.TechFrame)} " +
+                        $"register={GetValueTypeName(snapshot.VehicleRegister)} " +
+                        $"stageFactories={snapshot.AssemblyStageFactoryCount}");
                     LogDetailedSnapshot(snapshot, "ready");
                     running = false;
                     yield break;
@@ -54,7 +62,9 @@ namespace SprocketMultiplayer.Core
             }
 
             MelonLogger.Warning("[SpawnSniffer] Dependency sniff timed out. See previous snapshots for missing pieces.");
-            LogDetailedSnapshot(Capture(), "timeout");
+            var timeoutSnapshot = Capture();
+            SpawnSummaryLog.Warn($"deps timeout missing={GetMissingDependencies(timeoutSnapshot)}");
+            LogDetailedSnapshot(timeoutSnapshot, "timeout");
             running = false;
         }
 
@@ -487,6 +497,39 @@ namespace SprocketMultiplayer.Core
                 $"controller={(s.VehicleController != null ? "yes" : "no")}");
         }
 
+        private static void LogSummarySnapshot(SpawnDependencySnapshot s, int attempt)
+        {
+            SpawnSummaryLog.Info(
+                "deps " +
+                $"attempt={attempt} " +
+                $"ready={SpawnSummaryLog.YesNo(s.IsReady)} " +
+                $"missing={GetMissingDependencies(s)} " +
+                $"factory={SpawnSummaryLog.YesNo(s.VehicleFactory != null)} " +
+                $"context={SpawnSummaryLog.YesNo(s.FactoryContextReady)} " +
+                $"defaultContext={SpawnSummaryLog.YesNo(s.DefaultVehicleContext != null)} " +
+                $"techFrame={SpawnSummaryLog.YesNo(s.TechFrame != null)} " +
+                $"officialSpawner={SpawnSummaryLog.YesNo(s.OfficialSpawner != null)} " +
+                $"stageEvents={s.StageSpawnEventCount} " +
+                $"locator={SpawnSummaryLog.YesNo(s.SpawnLocator != null)} " +
+                $"stageFactories={s.AssemblyStageFactoryCount} " +
+                $"register={SpawnSummaryLog.YesNo(s.VehicleRegister != null)} " +
+                $"controller={SpawnSummaryLog.YesNo(s.VehicleController != null)}");
+        }
+
+        private static string GetMissingDependencies(SpawnDependencySnapshot s)
+        {
+            var missing = new List<string>();
+            if (s.VehicleFactory == null) missing.Add("factory");
+            if (!s.FactoryContextReady) missing.Add("context");
+            if (s.TechFrame == null) missing.Add("techFrame");
+            if (s.OfficialSpawner == null) missing.Add("officialSpawner");
+            if (s.AssemblyStageFactoryCount <= 0) missing.Add("stageFactories");
+            if (s.VehicleRegister == null) missing.Add("register");
+            if (s.VehicleController == null) missing.Add("controller");
+
+            return missing.Count == 0 ? "none" : string.Join(",", missing.ToArray());
+        }
+
         private static void LogDetailedSnapshot(SpawnDependencySnapshot s, string phase)
         {
             MelonLogger.Msg($"[SpawnSniffer:detail] phase={phase}");
@@ -906,5 +949,39 @@ namespace SprocketMultiplayer.Core
             AssemblyStageFactoryCount > 0 &&
             VehicleRegister != null &&
             VehicleController != null;
+    }
+
+    internal static class SpawnSummaryLog
+    {
+        public static void Info(string message)
+        {
+            MelonLogger.Msg("[SpawnSummary] " + Clean(message));
+        }
+
+        public static void Warn(string message)
+        {
+            MelonLogger.Warning("[SpawnSummary] " + Clean(message));
+        }
+
+        public static void Error(string message)
+        {
+            MelonLogger.Error("[SpawnSummary] " + Clean(message));
+        }
+
+        public static string YesNo(bool value)
+        {
+            return value ? "yes" : "no";
+        }
+
+        private static string Clean(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return "";
+
+            return value
+                .Replace('\r', ' ')
+                .Replace('\n', ' ')
+                .Replace('\t', ' ');
+        }
     }
 }

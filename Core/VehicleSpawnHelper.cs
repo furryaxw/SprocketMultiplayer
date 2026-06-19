@@ -102,6 +102,8 @@ namespace SprocketMultiplayer.Core {
             IVehicleEditGateway[] resultOut)
         {
             resultOut[0] = null;
+            string requestedTankName = tankName;
+            SpawnSummaryLog.Info($"spawn start requestedTank={requestedTankName} position={FormatVector(position)}");
             EnsureInitialized();
 
             // Resolve blueprint name, falling back to default if needed
@@ -111,21 +113,37 @@ namespace SprocketMultiplayer.Core {
                 if (defaultTankId == null)
                 {
                     MelonLogger.Error("[VehicleSpawner] No blueprints available.");
+                    SpawnSummaryLog.Error($"spawn fail step=resolve requestedTank={requestedTankName} reason=noBlueprints");
                     yield break;
                 }
                 tankName = defaultTankId;
                 MelonLogger.Msg($"[VehicleSpawner] Falling back to default: {tankName}");
+                SpawnSummaryLog.Warn($"spawn fallback requestedTank={requestedTankName} tank={tankName}");
             }
 
             // Load blueprint from disk
             IVehicleBlueprint blueprint;
-            try   { blueprint = LoadBlueprint(tankName); }
-            catch (Exception ex) { MelonLogger.Error($"[VehicleSpawner] LoadBlueprint: {ex.Message}"); yield break; }
-            if (blueprint == null) yield break;
+            try
+            {
+                blueprint = LoadBlueprint(tankName);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error($"[VehicleSpawner] LoadBlueprint: {ex.Message}");
+                SpawnSummaryLog.Error($"spawn fail step=load tank={tankName} reason={ex.Message}");
+                yield break;
+            }
+
+            if (blueprint == null)
+            {
+                SpawnSummaryLog.Error($"spawn fail step=load tank={tankName} reason=nullBlueprint");
+                yield break;
+            }
 
             // Ensure scene components are cached
             if (!EnsureSceneComponents())
             {
+                SpawnSummaryLog.Error($"spawn fail step=sceneDeps tank={tankName} missing={GetMissingSceneComponents()}");
                 MelonLogger.Error($"[VehicleSpawner] Could not spawn '{tankName}' — scene components not ready.");
                 yield break;
             }
@@ -150,17 +168,20 @@ namespace SprocketMultiplayer.Core {
                     cts.Token);
 
                 MelonLogger.Msg($"[VehicleSpawner] Spawn() returned: {rawTask?.GetIl2CppType()?.FullName ?? "null"}");
+                SpawnSummaryLog.Info($"spawn task tank={tankName} task={GetValueTypeName(rawTask)} spawner={DescribeComponent(cachedSpawner)}");
             }
             catch (Exception ex)
             {
                 MelonLogger.Error($"[VehicleSpawner] Spawn() threw: {ex.Message}");
                 if (ex.InnerException != null)
                     MelonLogger.Error($"[VehicleSpawner]   inner: {ex.InnerException.Message}");
+                SpawnSummaryLog.Error($"spawn fail step=spawnCall tank={tankName} reason={ex.Message}");
                 yield break;
             }
 
             if (rawTask == null)
             {
+                SpawnSummaryLog.Error($"spawn fail step=spawnCall tank={tankName} reason=nullTask");
                 MelonLogger.Error($"[VehicleSpawner] Could not spawn '{tankName}' — Spawn() returned null.");
                 yield break;
             }
@@ -192,6 +213,7 @@ namespace SprocketMultiplayer.Core {
             {
                 MelonLogger.Error("[VehicleSpawner] Spawn() task timed out.");
                 try { cts.Cancel(); } catch { }
+                SpawnSummaryLog.Error($"spawn fail step=spawnTask tank={tankName} reason=timeout");
                 yield break;
             }
 
@@ -202,6 +224,7 @@ namespace SprocketMultiplayer.Core {
                 if (resultProp == null)
                 {
                     MelonLogger.Error("[VehicleSpawner] Task has no Result property.");
+                    SpawnSummaryLog.Error($"spawn fail step=result tank={tankName} reason=noResultProperty");
                     yield break;
                 }
 
@@ -209,12 +232,18 @@ namespace SprocketMultiplayer.Core {
                 if (raw == null)
                 {
                     MelonLogger.Error("[VehicleSpawner] Task.Result is null.");
+                    SpawnSummaryLog.Error($"spawn fail step=result tank={tankName} reason=nullResult");
                     yield break;
                 }
 
+                string rawType = GetValueTypeName(raw);
+                bool isVehicleSpawn = false;
+                bool vehicleSpawned = false;
                 var vehicleSpawn = raw.TryCast<VehicleSpawn>();
                 if (vehicleSpawn != null)
                 {
+                    isVehicleSpawn = true;
+                    try { vehicleSpawned = vehicleSpawn.Spawned; } catch { }
                     gateway = vehicleSpawn.Vehicle;
                     MelonLogger.Msg($"[VehicleSpawner] VehicleSpawn received. Spawned={vehicleSpawn.Spawned}");
                 }
@@ -232,15 +261,23 @@ namespace SprocketMultiplayer.Core {
                 if (gateway == null)
                     gateway = raw.TryCast<IVehicleEditGateway>();
 
+                SpawnSummaryLog.Info(
+                    $"spawn result tank={tankName} rawType={rawType} " +
+                    $"vehicleSpawn={SpawnSummaryLog.YesNo(isVehicleSpawn)} " +
+                    $"spawned={SpawnSummaryLog.YesNo(vehicleSpawned)} " +
+                    $"gateway={SpawnSummaryLog.YesNo(gateway != null)}");
+
                 if (gateway == null)
                 {
                     MelonLogger.Error($"[VehicleSpawner] Could not extract gateway from result type: {raw.GetIl2CppType()?.FullName ?? "unknown"}");
+                    SpawnSummaryLog.Error($"spawn fail step=gateway tank={tankName} rawType={rawType}");
                     yield break;
                 }
             }
             catch (Exception ex)
             {
                 MelonLogger.Error($"[VehicleSpawner] Result extraction failed: {ex.Message}");
+                SpawnSummaryLog.Error($"spawn fail step=result tank={tankName} reason={ex.Message}");
                 yield break;
             }
 
@@ -248,6 +285,7 @@ namespace SprocketMultiplayer.Core {
             RegisterVehicle(gateway);
 
             MelonLogger.Msg($"[VehicleSpawner] '{tankName}' spawned at {position}.");
+            SpawnSummaryLog.Info($"spawn success tank={tankName} vehicle={DescribeGameObject(GetGameObjectFromGateway(gateway))} position={FormatVector(position)}");
             resultOut[0] = gateway;
         }
 
@@ -431,7 +469,10 @@ namespace SprocketMultiplayer.Core {
                 cachedRegister != null &&
                 cachedStageFactories != null &&
                 cachedStageFactories.Length > 0)
+            {
+                SpawnSummaryLog.Info("sceneDeps ready cached=yes");
                 return true;
+            }
 
             MelonLogger.Msg("[VehicleSpawner] Searching scene for spawner components...");
 
@@ -495,11 +536,13 @@ namespace SprocketMultiplayer.Core {
 
             if (cachedSource == null)
             {
+                SpawnSummaryLog.Warn("sceneDeps incomplete missing=source");
                 MelonLogger.Warning("[VehicleSpawner] VehicleSource not found.");
                 return false;
             }
             if (cachedSpawner == null)
             {
+                SpawnSummaryLog.Warn("sceneDeps incomplete missing=officialSpawner");
                 MelonLogger.Warning("[VehicleSpawner] VehicleSpawner not found.");
                 return false;
             }
@@ -518,11 +561,22 @@ namespace SprocketMultiplayer.Core {
 
             if (!ready)
             {
+                SpawnSummaryLog.Warn($"sceneDeps incomplete missing={GetMissingSceneComponents()}");
                 MelonLogger.Warning(
                     "[VehicleSpawner] Scene components incomplete: " +
                     $"factory={(cachedFactory != null ? "yes" : "no")} " +
                     $"techFrame={(cachedTechFrame != null ? "yes" : "no")} " +
                     $"register={(cachedRegister != null ? "yes" : "no")} " +
+                    $"stageFactories={(cachedStageFactories?.Length ?? 0)}");
+            }
+            else
+            {
+                SpawnSummaryLog.Info(
+                    "sceneDeps ready cached=no " +
+                    $"source={DescribeComponent(cachedSource)} " +
+                    $"spawner={DescribeComponent(cachedSpawner)} " +
+                    $"techFrame={GetValueTypeName(cachedTechFrame)} " +
+                    $"register={GetValueTypeName(cachedRegister)} " +
                     $"stageFactories={(cachedStageFactories?.Length ?? 0)}");
             }
 
@@ -1006,6 +1060,48 @@ namespace SprocketMultiplayer.Core {
                 return new Il2CppSystem.Object(obj.Pointer);
 
             return null;
+        }
+
+        private static string GetValueTypeName(object value)
+        {
+            if (value == null) return "null";
+
+            if (value is Il2CppSystem.Object il2Object)
+                return il2Object.GetIl2CppType()?.FullName ?? il2Object.GetType().FullName;
+
+            if (value is Il2CppObjectBase obj)
+                return obj.GetType().FullName;
+
+            return value.GetType().FullName;
+        }
+
+        private static string DescribeGameObject(GameObject go)
+        {
+            if (go == null) return "null";
+            return GetPath(go.transform);
+        }
+
+        private static string DescribeComponent(Component component)
+        {
+            if (component == null) return "null";
+            return GetPath(component.transform);
+        }
+
+        private static string FormatVector(Vector3 value)
+        {
+            return $"({value.x:0.##},{value.y:0.##},{value.z:0.##})";
+        }
+
+        private static string GetMissingSceneComponents()
+        {
+            var missing = new List<string>();
+            if (cachedSource == null) missing.Add("source");
+            if (cachedSpawner == null) missing.Add("officialSpawner");
+            if (cachedFactory == null) missing.Add("factory");
+            if (cachedTechFrame == null) missing.Add("techFrame");
+            if (cachedRegister == null) missing.Add("register");
+            if (cachedStageFactories == null || cachedStageFactories.Length <= 0) missing.Add("stageFactories");
+            return missing.Count == 0 ? "none" : string.Join(",", missing.ToArray());
         }
 
         private static string GetPath(Transform transform)

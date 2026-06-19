@@ -6,8 +6,10 @@ using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using Il2CppSprocket.Gameplay.VehicleControl;
+using Il2CppSprocket.Spawning;
 using Il2CppSprocket.TechTrees;
 using Il2CppSprocket.Vehicles;
+using Il2CppSprocket.Vehicles.Missions;
 using Il2CppSprocket.Vehicles.Spawning;
 using MelonLoader;
 using UnityEngine;
@@ -60,15 +62,21 @@ namespace SprocketMultiplayer.Core
 
             snapshot.VehicleFactory = FindVehicleFactory();
             snapshot.FactoryType = snapshot.VehicleFactory?.GetIl2CppType()?.FullName ?? "";
-            snapshot.FactoryContextReady = HasReadyFactoryContext(snapshot.VehicleFactory);
+            snapshot.FactoryContext = GetFactoryContext(snapshot.VehicleFactory);
+            snapshot.FactoryContextReady = snapshot.FactoryContext != null;
+            snapshot.DefaultVehicleContext = FindDefaultVehicleContext();
 
             snapshot.TechFrame = FindTechFrame();
             snapshot.TechFrameType = snapshot.TechFrame?.GetIl2CppType()?.FullName ?? "";
 
-            snapshot.VehicleRegister = FindVehicleRegister();
+            snapshot.StageSpawnEvents = UnityEngine.Object.FindObjectsOfType<StageVehicleSpawnEvent>();
+            snapshot.StageSpawnEventCount = snapshot.StageSpawnEvents?.Length ?? 0;
+            snapshot.VehicleRegister = FindVehicleRegister(snapshot.StageSpawnEvents);
             snapshot.VehicleController = FindVehicleController();
-            snapshot.OfficialSpawner = UnityEngine.Object.FindObjectOfType<VehicleSpawner>();
-            snapshot.AssemblyStageFactories = FindAssemblyStageFactories(snapshot.OfficialSpawner);
+            snapshot.SpawnLocator = FindSpawnLocator(snapshot.StageSpawnEvents);
+            snapshot.OfficialSpawner = FindOfficialSpawner(snapshot.StageSpawnEvents) ?? UnityEngine.Object.FindObjectOfType<VehicleSpawner>();
+            snapshot.VehicleAssemblyResources = FindVehicleAssemblyResources(snapshot.OfficialSpawner);
+            snapshot.AssemblyStageFactories = FindAssemblyStageFactories(snapshot.OfficialSpawner, snapshot.VehicleAssemblyResources);
             snapshot.AssemblyStageFactoryCount = snapshot.AssemblyStageFactories?.Length ?? 0;
 
             return snapshot;
@@ -91,22 +99,51 @@ namespace SprocketMultiplayer.Core
             }
         }
 
-        private static bool HasReadyFactoryContext(Il2CppSystem.Object factory)
+        private static Il2CppSystem.Object GetFactoryContext(Il2CppSystem.Object factory)
         {
-            if (factory == null) return false;
+            if (factory == null) return null;
 
             try
             {
                 var flags = Il2CppSystem.Reflection.BindingFlags.Public |
                             Il2CppSystem.Reflection.BindingFlags.NonPublic |
                             Il2CppSystem.Reflection.BindingFlags.Instance;
+
+                var prop = factory.GetIl2CppType().GetProperty("Context", flags) ??
+                           factory.GetIl2CppType().GetProperty("context", flags);
+                if (prop != null)
+                {
+                    var value = prop.GetValue(factory);
+                    var obj = AsIl2CppObject(value);
+                    if (obj != null)
+                        return obj;
+                }
+
                 var field = factory.GetIl2CppType().GetField("context", flags);
-                if (field == null) return true;
-                return field.GetValue(factory) != null;
+                if (field != null)
+                {
+                    var value = field.GetValue(factory);
+                    var obj = AsIl2CppObject(value);
+                    if (obj != null)
+                        return obj;
+                }
             }
             catch
             {
-                return false;
+            }
+
+            return null;
+        }
+
+        private static VehicleContext FindDefaultVehicleContext()
+        {
+            try
+            {
+                return VehicleContext.Default;
+            }
+            catch
+            {
+                return null;
             }
         }
 
@@ -155,15 +192,65 @@ namespace SprocketMultiplayer.Core
             return null;
         }
 
-        private static VehicleRegister FindVehicleRegister()
+        private static IVehicleRegister FindVehicleRegister(StageVehicleSpawnEvent[] stageEvents)
         {
+            if (stageEvents != null)
+            {
+                foreach (var stageEvent in stageEvents)
+                {
+                    if (stageEvent == null) continue;
+                    try
+                    {
+                        if (stageEvent.register != null)
+                            return stageEvent.register;
+                    }
+                    catch { }
+                }
+            }
+
             foreach (var mb in UnityEngine.Object.FindObjectsOfType<MonoBehaviour>())
             {
                 if (mb == null || mb.Pointer == IntPtr.Zero) continue;
                 try
                 {
-                    var reg = new Il2CppSystem.Object(mb.Pointer).TryCast<VehicleRegister>();
+                    var reg = new Il2CppSystem.Object(mb.Pointer).TryCast<IVehicleRegister>();
                     if (reg != null) return reg;
+                }
+                catch { }
+            }
+
+            return null;
+        }
+
+        private static VehicleSpawner FindOfficialSpawner(StageVehicleSpawnEvent[] stageEvents)
+        {
+            if (stageEvents == null) return null;
+
+            foreach (var stageEvent in stageEvents)
+            {
+                if (stageEvent == null) continue;
+                try
+                {
+                    if (stageEvent.spawner != null)
+                        return stageEvent.spawner;
+                }
+                catch { }
+            }
+
+            return null;
+        }
+
+        private static SpawnLocator FindSpawnLocator(StageVehicleSpawnEvent[] stageEvents)
+        {
+            if (stageEvents == null) return null;
+
+            foreach (var stageEvent in stageEvents)
+            {
+                if (stageEvent == null) continue;
+                try
+                {
+                    if (stageEvent.spawnLocator != null)
+                        return stageEvent.spawnLocator;
                 }
                 catch { }
             }
@@ -177,8 +264,38 @@ namespace SprocketMultiplayer.Core
             return controllers != null && controllers.Length > 0 ? controllers[0] : null;
         }
 
-        private static Il2CppReferenceArray<IVehicleAssemblyStageFactory> FindAssemblyStageFactories(VehicleSpawner spawner)
+        private static VehicleAssemblyResources FindVehicleAssemblyResources(VehicleSpawner spawner)
         {
+            try
+            {
+                if (spawner != null && spawner.assemblyResourcesOverride != null)
+                    return spawner.assemblyResourcesOverride;
+            }
+            catch { }
+
+            try
+            {
+                return VehicleAssemblyResources.Default;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static Il2CppReferenceArray<IVehicleAssemblyStageFactory> FindAssemblyStageFactories(VehicleSpawner spawner, VehicleAssemblyResources resources)
+        {
+            if (resources != null)
+            {
+                try
+                {
+                    var factories = resources.GetFactories();
+                    if (factories != null && factories.Length > 0)
+                        return factories;
+                }
+                catch { }
+            }
+
             if (spawner == null) return null;
 
             var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
@@ -229,8 +346,11 @@ namespace SprocketMultiplayer.Core
                 $"attempt={attempt} " +
                 $"factory={(s.VehicleFactory != null ? "yes" : "no")} " +
                 $"context={(s.FactoryContextReady ? "yes" : "no")} " +
+                $"defaultContext={(s.DefaultVehicleContext != null ? "yes" : "no")} " +
                 $"techFrame={(s.TechFrame != null ? "yes" : "no")} " +
                 $"officialSpawner={(s.OfficialSpawner != null ? "yes" : "no")} " +
+                $"stageEvents={s.StageSpawnEventCount} " +
+                $"locator={(s.SpawnLocator != null ? "yes" : "no")} " +
                 $"stageFactories={s.AssemblyStageFactoryCount} " +
                 $"register={(s.VehicleRegister != null ? "yes" : "no")} " +
                 $"controller={(s.VehicleController != null ? "yes" : "no")}");
@@ -239,12 +359,14 @@ namespace SprocketMultiplayer.Core
         private static void LogDetailedSnapshot(SpawnDependencySnapshot s, string phase)
         {
             MelonLogger.Msg($"[SpawnSniffer:detail] phase={phase}");
-            LogFactoryDetails(s.VehicleFactory);
+            LogFactoryDetails(s.VehicleFactory, s.FactoryContext, s.DefaultVehicleContext);
+            LogAssemblyResourcesDetails(s.VehicleAssemblyResources, s.AssemblyStageFactories);
+            LogStageSpawnDetails(s.StageSpawnEvents);
             LogSpawnerDetails();
             LogSceneComponentCandidates();
         }
 
-        private static void LogFactoryDetails(Il2CppSystem.Object factory)
+        private static void LogFactoryDetails(Il2CppSystem.Object factory, Il2CppSystem.Object context, VehicleContext defaultContext)
         {
             if (factory == null)
             {
@@ -254,6 +376,7 @@ namespace SprocketMultiplayer.Core
 
             var type = factory.GetIl2CppType();
             MelonLogger.Msg($"[SpawnSniffer:factory] type={type?.FullName ?? "unknown"}");
+            MelonLogger.Msg($"[SpawnSniffer:factory.context] active={GetValueTypeName(context)} default={GetValueTypeName(defaultContext)}");
 
             try
             {
@@ -292,6 +415,109 @@ namespace SprocketMultiplayer.Core
             {
                 MelonLogger.Warning($"[SpawnSniffer:factory] detail failed: {ex.Message}");
             }
+        }
+
+        private static void LogAssemblyResourcesDetails(VehicleAssemblyResources resources, Il2CppReferenceArray<IVehicleAssemblyStageFactory> factories)
+        {
+            if (resources == null)
+            {
+                MelonLogger.Msg("[SpawnSniffer:assembly] resources=null");
+                return;
+            }
+
+            int builtInStageCount = 0;
+            try { builtInStageCount = resources.builtInStages?.Length ?? 0; } catch { }
+
+            MelonLogger.Msg(
+                "[SpawnSniffer:assembly] " +
+                $"type={resources.GetIl2CppType()?.FullName ?? resources.GetType().FullName} " +
+                $"name={resources.name} " +
+                $"builtInStages={builtInStageCount} " +
+                $"factories={(factories?.Length ?? 0)}");
+
+            if (factories == null) return;
+
+            for (int i = 0; i < factories.Length && i < 16; i++)
+                MelonLogger.Msg($"[SpawnSniffer:assembly.factory] #{i} {GetValueTypeName(factories[i])}");
+
+            if (factories.Length > 16)
+                MelonLogger.Msg($"[SpawnSniffer:assembly.factory] omitted={factories.Length - 16}");
+        }
+
+        private static void LogStageSpawnDetails(StageVehicleSpawnEvent[] stageEvents)
+        {
+            int count = stageEvents?.Length ?? 0;
+            MelonLogger.Msg($"[SpawnSniffer:stageEvent] count={count}");
+            if (stageEvents == null) return;
+
+            for (int i = 0; i < stageEvents.Length && i < 8; i++)
+            {
+                var stageEvent = stageEvents[i];
+                if (stageEvent == null) continue;
+
+                MelonLogger.Msg(
+                    "[SpawnSniffer:stageEvent] " +
+                    $"#{i} path={GetPath(stageEvent.transform)} " +
+                    $"type={stageEvent.GetIl2CppType()?.FullName ?? stageEvent.GetType().FullName}");
+
+                int spawns = 0;
+                try { spawns = stageEvent.spawns?.Length ?? 0; } catch { }
+
+                MelonLogger.Msg(
+                    "[SpawnSniffer:stageEvent.refs] " +
+                    $"spawner={DescribeUnityObject(stageEvent.spawner)} " +
+                    $"source={DescribeUnityObject(stageEvent.blueprintSource)} " +
+                    $"locator={DescribeUnityObject(stageEvent.spawnLocator)} " +
+                    $"register={GetValueTypeName(stageEvent.register)} " +
+                    $"spawns={spawns}");
+
+                MelonLogger.Msg(
+                    "[SpawnSniffer:stageEvent.cfg] " +
+                    $"spawnLimit={SafeRead(() => stageEvent.spawnLimit.ToString())} " +
+                    $"useBudget={SafeRead(() => stageEvent.useBudget.ToString())} " +
+                    $"costBudget={SafeRead(() => stageEvent.costBudget.ToString())} " +
+                    $"remaining={SafeRead(() => stageEvent.RemainingCostBudget.ToString())} " +
+                    $"delay={SafeRead(() => stageEvent.delay.ToString())}");
+
+                LogVehicleSourceDetails(stageEvent.blueprintSource);
+                LogSpawnLocatorDetails(stageEvent.spawnLocator);
+            }
+
+            if (stageEvents.Length > 8)
+                MelonLogger.Msg($"[SpawnSniffer:stageEvent] omitted={stageEvents.Length - 8}");
+        }
+
+        private static void LogVehicleSourceDetails(VehicleSource source)
+        {
+            if (source == null) return;
+
+            int classificationCount = 0;
+            try { classificationCount = source.ClassificationFilters?.Length ?? 0; } catch { }
+
+            MelonLogger.Msg(
+                "[SpawnSniffer:vehicleSource] " +
+                $"path={GetPath(source.transform)} " +
+                $"mode={SafeRead(() => source.Mode.ToString())} " +
+                $"blueprint={SafeRead(() => source.BlueprintName)} " +
+                $"subdirectory={SafeRead(() => source.Subdirectory)} " +
+                $"source={SafeRead(() => source.Source.ToString())} " +
+                $"minTech={SafeRead(() => source.MinTechDate.ToString())} " +
+                $"maxTech={SafeRead(() => source.MaxTechDate.ToString())} " +
+                $"minMass={SafeRead(() => source.MinMass.ToString())} " +
+                $"maxMass={SafeRead(() => source.MaxMass.ToString())} " +
+                $"classFilters={classificationCount}");
+        }
+
+        private static void LogSpawnLocatorDetails(SpawnLocator locator)
+        {
+            if (locator == null) return;
+
+            MelonLogger.Msg(
+                "[SpawnSniffer:spawnLocator] " +
+                $"path={GetPath(locator.transform)} " +
+                $"type={locator.GetIl2CppType()?.FullName ?? locator.GetType().FullName} " +
+                $"maxSpawn={SafeRead(() => locator.MaxSpawn.ToString())} " +
+                $"nextSpawnIndex={SafeRead(() => locator.NextSpawnIndex.ToString())}");
         }
 
         private static void LogSpawnerDetails()
@@ -373,6 +599,8 @@ namespace SprocketMultiplayer.Core
             var techFrames = new List<string>();
             var registers = new List<string>();
             var vehicleSources = new List<string>();
+            var stageEvents = new List<string>();
+            var spawnLocators = new List<string>();
             var stageFactories = new List<string>();
             var spawnerNamedComponents = new List<string>();
 
@@ -395,8 +623,10 @@ namespace SprocketMultiplayer.Core
                 string descriptor = $"{GetPath(mb.transform)} [{typeName}]";
 
                 try { if (obj != null && obj.TryCast<ITechFrame>() != null) techFrames.Add(descriptor); } catch { }
-                try { if (obj != null && obj.TryCast<VehicleRegister>() != null) registers.Add(descriptor); } catch { }
+                try { if (obj != null && obj.TryCast<IVehicleRegister>() != null) registers.Add(descriptor); } catch { }
                 try { if (obj != null && obj.TryCast<VehicleSource>() != null) vehicleSources.Add(descriptor); } catch { }
+                try { if (obj != null && obj.TryCast<StageVehicleSpawnEvent>() != null) stageEvents.Add(descriptor); } catch { }
+                try { if (obj != null && obj.TryCast<SpawnLocator>() != null) spawnLocators.Add(descriptor); } catch { }
                 try { if (obj != null && obj.TryCast<IVehicleAssemblyStageFactory>() != null) stageFactories.Add(descriptor); } catch { }
 
                 if (descriptor.IndexOf("spawner", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -407,6 +637,8 @@ namespace SprocketMultiplayer.Core
             LogList("techFrameCandidate", techFrames, 16);
             LogList("vehicleRegisterCandidate", registers, 16);
             LogList("vehicleSourceCandidate", vehicleSources, 16);
+            LogList("stageEventCandidate", stageEvents, 16);
+            LogList("spawnLocatorCandidate", spawnLocators, 16);
             LogList("assemblyStageFactoryCandidate", stageFactories, 16);
             LogList("spawnerNamedComponent", spawnerNamedComponents, 24);
         }
@@ -446,10 +678,26 @@ namespace SprocketMultiplayer.Core
                    text.Contains("stage") ||
                    text.Contains("assembly") ||
                    text.Contains("factory") ||
+                   text.Contains("spawn") ||
+                   text.Contains("blueprint") ||
+                   text.Contains("locator") ||
                    text.Contains("spawner") ||
                    text.Contains("source") ||
                    text.Contains("register") ||
                    text.Contains("vehicle");
+        }
+
+        private static Il2CppSystem.Object AsIl2CppObject(object value)
+        {
+            if (value == null) return null;
+
+            if (value is Il2CppSystem.Object il2Object)
+                return il2Object;
+
+            if (value is Il2CppObjectBase obj && obj.Pointer != IntPtr.Zero)
+                return new Il2CppSystem.Object(obj.Pointer);
+
+            return null;
         }
 
         private static string GetValueTypeName(object value)
@@ -463,6 +711,28 @@ namespace SprocketMultiplayer.Core
                 return obj.GetType().FullName;
 
             return value.GetType().FullName;
+        }
+
+        private static string DescribeUnityObject(UnityEngine.Object value)
+        {
+            if (value == null) return "null";
+
+            if (value is Component component)
+                return $"{GetPath(component.transform)} [{component.GetIl2CppType()?.FullName ?? component.GetType().FullName}]";
+
+            return $"{value.name} [{value.GetType().FullName}]";
+        }
+
+        private static string SafeRead(Func<string> readValue)
+        {
+            try
+            {
+                return readValue() ?? "null";
+            }
+            catch (Exception ex)
+            {
+                return "read failed: " + ex.Message;
+            }
         }
 
         private static string FormatParameters(Il2CppSystem.Reflection.ParameterInfo[] parameters)
@@ -483,12 +753,18 @@ namespace SprocketMultiplayer.Core
         public Il2CppSystem.Object VehicleFactory;
         public string FactoryType;
         public bool FactoryContextReady;
+        public Il2CppSystem.Object FactoryContext;
+        public VehicleContext DefaultVehicleContext;
         public Il2CppSystem.Object TechFrame;
         public string TechFrameType;
+        public StageVehicleSpawnEvent[] StageSpawnEvents;
+        public int StageSpawnEventCount;
+        public SpawnLocator SpawnLocator;
         public VehicleSpawner OfficialSpawner;
+        public VehicleAssemblyResources VehicleAssemblyResources;
         public Il2CppReferenceArray<IVehicleAssemblyStageFactory> AssemblyStageFactories;
         public int AssemblyStageFactoryCount;
-        public VehicleRegister VehicleRegister;
+        public IVehicleRegister VehicleRegister;
         public VehicleController VehicleController;
 
         public bool IsReady =>

@@ -8,6 +8,7 @@ using Il2CppSprocket.TechTrees;
 using UnityEngine;
 using MelonLoader;
 using Il2CppSprocket.Vehicles;
+using Il2CppSprocket.Vehicles.Missions;
 using Il2CppSprocket.Vehicles.Serialization;
 using Il2CppSprocket.Vehicles.Spawning;
 
@@ -28,7 +29,7 @@ namespace SprocketMultiplayer.Core {
         private static VehicleSource cachedSource;  // VehicleSource on the spawner GO
         private static Il2CppSystem.Object cachedFactory;  // VehicleFactories singleton (IVehicleFactory)
         private static Il2CppSystem.Object cachedTechFrame;  // ITechFrame found on the spawner GO
-        private static VehicleRegister cachedRegister;
+        private static IVehicleRegister cachedRegister;
         private static VehicleController cachedController;
 
         private static readonly string factionsBasePath = Path.Combine(
@@ -513,27 +514,43 @@ namespace SprocketMultiplayer.Core {
             return cachedFactory != null;
         }
 
-        private static VehicleRegister GetVehicleRegister()
+        private static IVehicleRegister GetVehicleRegister()
         {
             if (cachedRegister != null) return cachedRegister;
 
-            foreach (var mb in UnityEngine.Object.FindObjectsOfType<MonoBehaviour>())
+            foreach (var stageEvent in UnityEngine.Object.FindObjectsOfType<StageVehicleSpawnEvent>())
             {
-                if (mb == null || mb.Pointer == IntPtr.Zero) continue;
+                if (stageEvent == null) continue;
                 try
                 {
-                    var reg = new Il2CppSystem.Object(mb.Pointer).TryCast<VehicleRegister>();
+                    var reg = stageEvent.register;
                     if (reg != null)
                     {
                         cachedRegister = reg;
-                        MelonLogger.Msg("[VehicleSpawner] VehicleRegister found.");
+                        MelonLogger.Msg($"[VehicleSpawner] IVehicleRegister found on stage event '{stageEvent.name}'.");
                         return reg;
                     }
                 }
                 catch { }
             }
 
-            MelonLogger.Warning("[VehicleSpawner] VehicleRegister not found.");
+            foreach (var mb in UnityEngine.Object.FindObjectsOfType<MonoBehaviour>())
+            {
+                if (mb == null || mb.Pointer == IntPtr.Zero) continue;
+                try
+                {
+                    var reg = new Il2CppSystem.Object(mb.Pointer).TryCast<IVehicleRegister>();
+                    if (reg != null)
+                    {
+                        cachedRegister = reg;
+                        MelonLogger.Msg("[VehicleSpawner] IVehicleRegister found.");
+                        return reg;
+                    }
+                }
+                catch { }
+            }
+
+            MelonLogger.Warning("[VehicleSpawner] IVehicleRegister not found.");
             return null;
         }
 

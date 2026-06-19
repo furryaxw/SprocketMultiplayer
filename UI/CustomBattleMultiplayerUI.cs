@@ -344,14 +344,14 @@ namespace SprocketMultiplayer.UI
             tankButtonObjects.Clear();
 
             const int columns = 2;
-            const int rows = 10;
+            const int rows = 8;
             const float cellWidth = 178f;
-            const float cellHeight = 66f;
+            const float cellHeight = 78f;
             const float gapX = 8f;
             const float gapY = 2f;
             const int pageSize = columns * rows;
             float startX = -((columns - 1) * (cellWidth + gapX)) / 2f;
-            float startY = 307f;
+            float startY = 301f;
 
             TextMeshProUGUI title = CreateTextTMP(parent, "TankListTitle", "SELECT TANK", new Vector2(0, 360), 18, TextAlignmentOptions.Center);
             title.rectTransform.sizeDelta = new Vector2(360, 32);
@@ -445,7 +445,7 @@ namespace SprocketMultiplayer.UI
             RectTransform iconRect = iconObj.AddComponent<RectTransform>();
             iconRect.anchorMin = new Vector2(0.5f, 1f);
             iconRect.anchorMax = new Vector2(0.5f, 1f);
-            iconRect.anchoredPosition = new Vector2(0, -24);
+            iconRect.anchoredPosition = new Vector2(0, -32);
             iconRect.sizeDelta = new Vector2(160, 60);
 
             Image iconImg = iconObj.AddComponent<Image>();
@@ -465,16 +465,17 @@ namespace SprocketMultiplayer.UI
             textObj.transform.SetParent(obj.transform, false);
 
             RectTransform textRect = textObj.AddComponent<RectTransform>();
-            textRect.anchorMin = Vector2.zero;
-            textRect.anchorMax = Vector2.one;
-            textRect.offsetMin = new Vector2(4, 2);
-            textRect.offsetMax = new Vector2(-4, -52);
+            textRect.anchorMin = new Vector2(0.5f, 0f);
+            textRect.anchorMax = new Vector2(0.5f, 0f);
+            textRect.pivot = new Vector2(0.5f, 0f);
+            textRect.anchoredPosition = new Vector2(0f, 2f);
+            textRect.sizeDelta = new Vector2(size.x - 8f, 16f);
 
             TextMeshProUGUI tmp = textObj.AddComponent<TextMeshProUGUI>();
             tmp.text = tank.Name;
             tmp.fontSize = 11;
             tmp.color = Color.white;
-            tmp.alignment = TextAlignmentOptions.Bottom;
+            tmp.alignment = TextAlignmentOptions.Center;
             tmp.enableWordWrapping = false;
             tmp.overflowMode = TextOverflowModes.Ellipsis;
 

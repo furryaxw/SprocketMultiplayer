@@ -38,6 +38,17 @@ namespace SprocketMultiplayer.UI
             private set => PlayerPrefs.SetString("SprocketMP.PlayerName", value);
         }
 
+        public static bool IsInjected => injectedRoot != null;
+
+        public static bool ShouldInject()
+        {
+            if (IsInjected)
+                return false;
+
+            return GameObject.Find("Root/Canvas/Content/Team config") != null &&
+                   GameObject.Find("Root/Canvas/Content/Map") != null;
+        }
+
         public static void Inject()
         {
             if (injectedRoot != null) return;

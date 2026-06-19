@@ -17,6 +17,7 @@ namespace SprocketMultiplayer
         private static NetworkManager network;
         private bool consoleSpawned;
         private string lastSceneName = "";
+        private float nextCustomBattleProbeTime;
 
         public override void OnInitializeMelon()
         {
@@ -69,6 +70,16 @@ namespace SprocketMultiplayer
                 TrySpawnConsole();
 
             CheckSceneChange();
+            ProbeCustomBattleUi();
+        }
+
+        public override void OnSceneWasLoaded(int buildIndex, string sceneName)
+        {
+            if (sceneName == "CustomBattleCreation")
+            {
+                MelonLogger.Msg("[SceneLoad] CustomBattleCreation loaded. Waiting to inject multiplayer UI...");
+                MelonCoroutines.Start(InjectCustomBattleUiAfterDelay());
+            }
         }
 
         private void CheckSceneChange()
@@ -90,12 +101,6 @@ namespace SprocketMultiplayer
 
             VehicleSpawnHelper.ClearCaches();
 
-            if (scene.name == "CustomBattleCreation")
-            {
-                MelonCoroutines.Start(InjectCustomBattleUiAfterDelay());
-                return;
-            }
-
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsActiveMultiplayer)
             {
                 return;
@@ -111,7 +116,22 @@ namespace SprocketMultiplayer
         private IEnumerator InjectCustomBattleUiAfterDelay()
         {
             yield return new WaitForSeconds(0.5f);
-            CustomBattleMultiplayerUI.Inject();
+            if (CustomBattleMultiplayerUI.ShouldInject())
+                CustomBattleMultiplayerUI.Inject();
+        }
+
+        private void ProbeCustomBattleUi()
+        {
+            if (Time.unscaledTime < nextCustomBattleProbeTime)
+                return;
+
+            nextCustomBattleProbeTime = Time.unscaledTime + 0.5f;
+
+            if (CustomBattleMultiplayerUI.ShouldInject())
+            {
+                MelonLogger.Msg("[CustomBattleUI] Custom battle UI detected by probe.");
+                CustomBattleMultiplayerUI.Inject();
+            }
         }
 
         private void TrySpawnConsole()

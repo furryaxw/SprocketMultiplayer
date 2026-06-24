@@ -3,6 +3,12 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using Il2CppInterop.Runtime.InteropTypes;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using Il2CppSprocket;
+using Il2CppSprocket.CustomBattles;
+using Il2CppSystem.Linq;
 using Il2CppTMPro;
 using MelonLoader;
 using SprocketMultiplayer.Core;
@@ -34,7 +40,7 @@ namespace SprocketMultiplayer.UI
         private static int lastMapIndex = -1;
 
         private static readonly List<TankInfo> tanks = new List<TankInfo>();
-        private static readonly string[] sceneNames = { "Railway" };
+        private static readonly string[] fallbackSceneNames = { "Railway" };
 
         public static TankInfo SelectedTank { get; private set; }
 
@@ -103,12 +109,13 @@ namespace SprocketMultiplayer.UI
                         var dropdowns = mapObj.GetComponentsInChildren<Il2CppDynamicGUI.DropDown>();
                         if (dropdowns != null && dropdowns.Count >= 1)
                         {
-                            int mapIndex = dropdowns[0].SelectedIndex;
+                            var mapDropdown = dropdowns[0];
+                            int mapIndex = mapDropdown.SelectedIndex;
                             if (mapIndex != lastMapIndex)
                             {
                                 lastMapIndex = mapIndex;
                                 ApplyMapSelection(mapIndex);
-                                LobbyManager.Instance.SetMap(mapIndex, ResolveSceneName(mapIndex));
+                                LobbyManager.Instance.SetMap(mapIndex, ResolveSceneName(mapIndex, mapDropdown));
                             }
                         }
                     }
@@ -124,28 +131,99 @@ namespace SprocketMultiplayer.UI
             if (index < 0)
                 index = 0;
 
+            Il2CppDynamicGUI.DropDown mapDropdown = null;
             GameObject mapObj = GameObject.Find("Root/Canvas/Content/Map");
             if (mapObj != null)
             {
                 var dropdowns = mapObj.GetComponentsInChildren<Il2CppDynamicGUI.DropDown>();
-                if (dropdowns != null && dropdowns.Count >= 1 && dropdowns[0].SelectedIndex != index)
+                if (dropdowns != null && dropdowns.Count >= 1)
                 {
-                    dropdowns[0].SetHovered(index);
-                    dropdowns[0].SetHoveredAsSelected();
+                    mapDropdown = dropdowns[0];
+                    if (mapDropdown.SelectedIndex != index)
+                    {
+                        mapDropdown.SetHovered(index);
+                        mapDropdown.SetHoveredAsSelected();
+                    }
                 }
             }
 
             LobbyManager.Instance.SelectedMapIndex = index;
-            LobbyManager.Instance.SelectedMap = ResolveSceneName(index);
+            if (NetworkManager.Instance != null && NetworkManager.Instance.IsHost)
+                LobbyManager.Instance.SelectedMap = ResolveSceneName(index, mapDropdown);
             Refresh();
         }
 
-        private static string ResolveSceneName(int index)
+        private static string ResolveSceneName(int index, Il2CppDynamicGUI.DropDown mapDropdown = null)
         {
-            if (index >= 0 && index < sceneNames.Length)
-                return sceneNames[index];
+            string optionName = ResolveSceneNameFromDropdownOptions(index, mapDropdown);
+            if (!string.IsNullOrEmpty(optionName))
+                return optionName;
 
+            string resolved = ResolveSceneNameFromMapConfigurator(index);
+            if (!string.IsNullOrEmpty(resolved))
+                return resolved;
+
+            if (index >= 0 && index < fallbackSceneNames.Length)
+            {
+                SpawnSummaryLog.Warn($"mapResolve index={index} result=fallback scene={fallbackSceneNames[index]}");
+                return fallbackSceneNames[index];
+            }
+
+            SpawnSummaryLog.Warn($"mapResolve index={index} result=fallback scene=Railway");
             return "Railway";
+        }
+
+        private static string ResolveSceneNameFromDropdownOptions(int index, Il2CppDynamicGUI.DropDown mapDropdown)
+        {
+            if (mapDropdown == null)
+                mapDropdown = FindMapDropdown();
+
+            if (mapDropdown == null)
+            {
+                SpawnSummaryLog.Warn($"mapResolve index={index} source=dropdown result=noDropdown");
+                return null;
+            }
+
+            try
+            {
+                if (index < 0 || index >= mapDropdown.OptionCount)
+                {
+                    SpawnSummaryLog.Warn($"mapResolve index={index} source=dropdown result=outOfRange count={mapDropdown.OptionCount}");
+                    return null;
+                }
+
+                string optionName = mapDropdown.Options.ElementAt(index);
+                if (!string.IsNullOrWhiteSpace(optionName))
+                {
+                    SpawnSummaryLog.Info($"mapResolve index={index} source=dropdown option={SanitizeLogValue(optionName)}");
+                    return optionName;
+                }
+
+                SpawnSummaryLog.Warn($"mapResolve index={index} source=dropdown result=noOption count={mapDropdown.OptionCount}");
+            }
+            catch (Exception ex)
+            {
+                SpawnSummaryLog.Warn($"mapResolve index={index} source=dropdown result=exception reason={SanitizeLogValue(ex.Message)}");
+            }
+
+            return null;
+        }
+
+        private static Il2CppDynamicGUI.DropDown FindMapDropdown()
+        {
+            GameObject mapObj = GameObject.Find("Root/Canvas/Content/Map");
+            if (mapObj == null)
+                return null;
+
+            try
+            {
+                var dropdowns = mapObj.GetComponentsInChildren<Il2CppDynamicGUI.DropDown>(true);
+                return dropdowns != null && dropdowns.Count >= 1 ? dropdowns[0] : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public static void Refresh()
@@ -830,6 +908,156 @@ namespace SprocketMultiplayer.UI
             tanks.AddRange(TankDatabase.LoadTanks());
         }
 
+        private static string ResolveSceneNameFromMapConfigurator(int index)
+        {
+            try
+            {
+                var config = FindMapConfiguratorObject() as MapConfigurator;
+                if (config == null)
+                {
+                    SpawnSummaryLog.Warn($"mapResolve index={index} source=configurator result=noConfigurator");
+                    return null;
+                }
+
+                string fromMaps = ResolveSceneNameFromMapsField(config, index);
+                if (!string.IsNullOrWhiteSpace(fromMaps))
+                    return fromMaps;
+
+                string fromDisplayed = ResolveSceneNameFromDisplayedDefinition(config);
+                if (!string.IsNullOrWhiteSpace(fromDisplayed))
+                    return fromDisplayed;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[CustomBattleUI] Map identifier resolve failed: {ex.Message}");
+                SpawnSummaryLog.Warn($"mapResolve index={index} result=exception reason={SanitizeLogValue(ex.Message)}");
+            }
+
+            return null;
+        }
+
+        private static string ResolveSceneNameFromMapsField(MapConfigurator config, int index)
+        {
+            try
+            {
+                const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+                var mapsField = typeof(MapConfigurator).GetField("maps", flags);
+                if (mapsField == null)
+                {
+                    SpawnSummaryLog.Warn($"mapResolve index={index} source=mapsField result=noField");
+                    return null;
+                }
+
+                object rawMaps = mapsField.GetValue(config);
+                if (rawMaps == null)
+                {
+                    SpawnSummaryLog.Warn($"mapResolve index={index} source=mapsField result=nullMaps");
+                    return null;
+                }
+
+                if (rawMaps is Il2CppReferenceArray<MapInfo> mapArray)
+                {
+                    if (index < 0 || index >= mapArray.Length)
+                    {
+                        SpawnSummaryLog.Warn($"mapResolve index={index} source=mapsField result=outOfRange count={mapArray.Length}");
+                        return null;
+                    }
+
+                    string identifier = mapArray[index].Config?.Identifier;
+                    if (!string.IsNullOrWhiteSpace(identifier))
+                    {
+                        SpawnSummaryLog.Info($"mapResolve index={index} source=mapsField identifier={identifier}");
+                        return identifier;
+                    }
+                }
+
+                if (rawMaps is MapInfo[] managedArray)
+                {
+                    if (index < 0 || index >= managedArray.Length)
+                    {
+                        SpawnSummaryLog.Warn($"mapResolve index={index} source=mapsManagedField result=outOfRange count={managedArray.Length}");
+                        return null;
+                    }
+
+                    string identifier = managedArray[index].Config?.Identifier;
+                    if (!string.IsNullOrWhiteSpace(identifier))
+                    {
+                        SpawnSummaryLog.Info($"mapResolve index={index} source=mapsManagedField identifier={identifier}");
+                        return identifier;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                SpawnSummaryLog.Warn($"mapResolve index={index} source=mapsField result=exception reason={SanitizeLogValue(ex.Message)}");
+            }
+
+            return null;
+        }
+
+        private static string ResolveSceneNameFromDisplayedDefinition(MapConfigurator config)
+        {
+            try
+            {
+                const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+                var displayedField = typeof(MapConfigurator).GetField("displayedDef", flags);
+                if (displayedField == null)
+                {
+                    SpawnSummaryLog.Warn("mapResolve source=displayedDef result=noField");
+                    return null;
+                }
+
+                object rawDisplayed = displayedField.GetValue(config);
+                if (rawDisplayed is MapInfo displayed)
+                {
+                    string identifier = displayed.Config?.Identifier;
+                    if (!string.IsNullOrWhiteSpace(identifier))
+                    {
+                        SpawnSummaryLog.Info($"mapResolve source=displayedDef identifier={identifier}");
+                        return identifier;
+                    }
+                }
+
+            }
+            catch (Exception ex)
+            {
+                SpawnSummaryLog.Warn($"mapResolve source=displayedDef result=exception reason={SanitizeLogValue(ex.Message)}");
+            }
+
+            return null;
+        }
+
+        private static object FindMapConfiguratorObject()
+        {
+            try
+            {
+                var config = UnityEngine.Object.FindObjectOfType<MapConfigurator>(true);
+                if (config != null)
+                    return config;
+            }
+            catch
+            {
+            }
+
+            foreach (var behaviour in UnityEngine.Object.FindObjectsOfType<MonoBehaviour>(true))
+            {
+                if (behaviour == null)
+                    continue;
+
+                try
+                {
+                    string fullName = behaviour.GetType().FullName ?? "";
+                    if (fullName.IndexOf("MapConfigurator", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return behaviour;
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
+        }
+
         private static string GetCurrentPlayerName()
         {
             string value = nameInput != null ? nameInput.text : PlayerName;
@@ -838,6 +1066,14 @@ namespace SprocketMultiplayer.UI
 
             PlayerName = value.Trim();
             return PlayerName;
+        }
+
+        private static string SanitizeLogValue(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return "";
+
+            return value.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ');
         }
 
         private static bool GetLocalReadyState()

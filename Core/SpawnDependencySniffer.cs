@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
@@ -14,6 +15,7 @@ using Il2CppSprocket.Vehicles.Missions;
 using Il2CppSprocket.Vehicles.Spawning;
 using MelonLoader;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace SprocketMultiplayer.Core
 {
@@ -34,7 +36,7 @@ namespace SprocketMultiplayer.Core
             MelonLogger.Msg("[SpawnSniffer] Starting dependency sniff.");
             SpawnSummaryLog.Info("deps start");
 
-            const int maxSeconds = 30;
+            const int maxSeconds = 5;
             for (int i = 0; i < maxSeconds; i++)
             {
                 var snapshot = Capture();
@@ -49,11 +51,13 @@ namespace SprocketMultiplayer.Core
                     MelonLogger.Msg("[SpawnSniffer] All required spawn dependencies are available.");
                     SpawnSummaryLog.Info(
                         "deps ready " +
+                        $"stage={DescribeUnityObject(snapshot.PreferredStageEvent)} " +
                         $"spawner={DescribeUnityObject(snapshot.OfficialSpawner)} " +
                         $"techFrame={GetValueTypeName(snapshot.TechFrame)} " +
                         $"register={GetValueTypeName(snapshot.VehicleRegister)} " +
                         $"stageFactories={snapshot.AssemblyStageFactoryCount}");
                     LogDetailedSnapshot(snapshot, "ready");
+                    TriggerMultiplayerSceneStart();
                     running = false;
                     yield break;
                 }
@@ -68,12 +72,26 @@ namespace SprocketMultiplayer.Core
             running = false;
         }
 
+        private static void TriggerMultiplayerSceneStart()
+        {
+            if (MultiplayerManager.Instance == null)
+            {
+                SpawnSummaryLog.Error("deps ready trigger=OnSceneLoaded result=noManager");
+                return;
+            }
+
+            SpawnSummaryLog.Info("deps ready trigger=OnSceneLoaded");
+            MultiplayerManager.Instance.OnSceneLoaded();
+        }
+
         public static SpawnDependencySnapshot Capture()
         {
             var snapshot = new SpawnDependencySnapshot();
 
             snapshot.VehicleFactory = FindVehicleFactory();
             snapshot.FactoryType = snapshot.VehicleFactory?.GetIl2CppType()?.FullName ?? "";
+            VehicleRuntimeDiagnostics.EnsureStaticVehicleFactory(out _, out _);
+            snapshot.StaticVehicleFactory = VehicleRuntimeDiagnostics.GetStaticVehicleFactory();
             snapshot.FactoryContext = GetFactoryContext(snapshot.VehicleFactory);
             snapshot.FactoryContextReady = snapshot.FactoryContext != null;
             snapshot.DefaultVehicleContext = FindDefaultVehicleContext();
@@ -83,13 +101,22 @@ namespace SprocketMultiplayer.Core
 
             snapshot.StageSpawnEvents = UnityEngine.Object.FindObjectsOfType<StageVehicleSpawnEvent>();
             snapshot.StageSpawnEventCount = snapshot.StageSpawnEvents?.Length ?? 0;
-            snapshot.VehicleRegister = FindVehicleRegister(snapshot.StageSpawnEvents);
+            snapshot.PreferredStageEvent = FindPreferredStageEvent(snapshot.StageSpawnEvents);
+            snapshot.VehicleRegister = FindVehicleRegister(snapshot.StageSpawnEvents, snapshot.PreferredStageEvent);
             snapshot.VehicleController = FindVehicleController();
-            snapshot.SpawnLocator = FindSpawnLocator(snapshot.StageSpawnEvents);
-            snapshot.OfficialSpawner = FindOfficialSpawner(snapshot.StageSpawnEvents) ?? UnityEngine.Object.FindObjectOfType<VehicleSpawner>();
+            snapshot.SpawnLocator = FindSpawnLocator(snapshot.StageSpawnEvents, snapshot.PreferredStageEvent);
+            snapshot.OfficialSpawner = FindOfficialSpawner(snapshot.StageSpawnEvents, snapshot.PreferredStageEvent) ?? UnityEngine.Object.FindObjectOfType<VehicleSpawner>();
             snapshot.VehicleAssemblyResources = FindVehicleAssemblyResources(snapshot.OfficialSpawner);
             snapshot.AssemblyStageFactories = FindAssemblyStageFactories(snapshot.OfficialSpawner, snapshot.VehicleAssemblyResources);
             snapshot.AssemblyStageFactoryCount = snapshot.AssemblyStageFactories?.Length ?? 0;
+            VehicleRuntimeDiagnostics.EnsureVehiclesMainResources(out _, out _);
+            snapshot.VehicleResourcesGlobal = VehicleRuntimeDiagnostics.GetGlobalVehicleResources();
+            if (snapshot.VehicleResourcesGlobal == null)
+                VehicleRuntimeDiagnostics.EnsureVehicleResourcesGlobal(out _, out _);
+            snapshot.VehicleResourcesGlobal = VehicleRuntimeDiagnostics.GetGlobalVehicleResources();
+            snapshot.VehiclesMainCount = VehicleRuntimeDiagnostics.CountVehiclesMain();
+            snapshot.VehiclesMainAllCount = VehicleRuntimeDiagnostics.CountVehiclesMainAll();
+            snapshot.VehiclesMainResources = VehicleRuntimeDiagnostics.GetVehiclesMainResources();
 
             return snapshot;
         }
@@ -204,8 +231,46 @@ namespace SprocketMultiplayer.Core
             return null;
         }
 
-        private static IVehicleRegister FindVehicleRegister(StageVehicleSpawnEvent[] stageEvents)
+        private static StageVehicleSpawnEvent FindPreferredStageEvent(StageVehicleSpawnEvent[] stageEvents)
         {
+            if (stageEvents == null || stageEvents.Length == 0) return null;
+
+            StageVehicleSpawnEvent fallback = null;
+            foreach (var stageEvent in stageEvents)
+            {
+                if (stageEvent == null) continue;
+                if (fallback == null) fallback = stageEvent;
+
+                try
+                {
+                    string path = GetPath(stageEvent.transform);
+                    string mode = stageEvent.blueprintSource != null ? stageEvent.blueprintSource.Mode.ToString() : "";
+                    if (path.IndexOf("Player Mission", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        mode.IndexOf("EditorExitSave", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        return stageEvent;
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            return fallback;
+        }
+
+        private static IVehicleRegister FindVehicleRegister(StageVehicleSpawnEvent[] stageEvents, StageVehicleSpawnEvent preferredStageEvent)
+        {
+            if (preferredStageEvent != null)
+            {
+                try
+                {
+                    if (preferredStageEvent.register != null)
+                        return preferredStageEvent.register;
+                }
+                catch { }
+            }
+
             if (stageEvents != null)
             {
                 foreach (var stageEvent in stageEvents)
@@ -249,8 +314,18 @@ namespace SprocketMultiplayer.Core
             return CreateAndInjectVehicleRegister(stageEvents);
         }
 
-        private static VehicleSpawner FindOfficialSpawner(StageVehicleSpawnEvent[] stageEvents)
+        private static VehicleSpawner FindOfficialSpawner(StageVehicleSpawnEvent[] stageEvents, StageVehicleSpawnEvent preferredStageEvent)
         {
+            if (preferredStageEvent != null)
+            {
+                try
+                {
+                    if (preferredStageEvent.spawner != null)
+                        return preferredStageEvent.spawner;
+                }
+                catch { }
+            }
+
             if (stageEvents == null) return null;
 
             foreach (var stageEvent in stageEvents)
@@ -267,8 +342,18 @@ namespace SprocketMultiplayer.Core
             return null;
         }
 
-        private static SpawnLocator FindSpawnLocator(StageVehicleSpawnEvent[] stageEvents)
+        private static SpawnLocator FindSpawnLocator(StageVehicleSpawnEvent[] stageEvents, StageVehicleSpawnEvent preferredStageEvent)
         {
+            if (preferredStageEvent != null)
+            {
+                try
+                {
+                    if (preferredStageEvent.spawnLocator != null)
+                        return preferredStageEvent.spawnLocator;
+                }
+                catch { }
+            }
+
             if (stageEvents == null) return null;
 
             foreach (var stageEvent in stageEvents)
@@ -420,8 +505,28 @@ namespace SprocketMultiplayer.Core
             }
             catch
             {
-                return null;
             }
+
+            try
+            {
+                var resources = UnityEngine.Resources.FindObjectsOfTypeAll<VehicleAssemblyResources>();
+                if (resources != null)
+                {
+                    foreach (var candidate in resources)
+                    {
+                        try
+                        {
+                            var factories = candidate?.GetFactories();
+                            if (factories != null && factories.Length > 0)
+                                return candidate;
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+
+            return null;
         }
 
         private static Il2CppReferenceArray<IVehicleAssemblyStageFactory> FindAssemblyStageFactories(VehicleSpawner spawner, VehicleAssemblyResources resources)
@@ -486,6 +591,7 @@ namespace SprocketMultiplayer.Core
                 "[SpawnSniffer] " +
                 $"attempt={attempt} " +
                 $"factory={(s.VehicleFactory != null ? "yes" : "no")} " +
+                $"factoryStatic={(s.StaticVehicleFactory != null ? "yes" : "no")} " +
                 $"context={(s.FactoryContextReady ? "yes" : "no")} " +
                 $"defaultContext={(s.DefaultVehicleContext != null ? "yes" : "no")} " +
                 $"techFrame={(s.TechFrame != null ? "yes" : "no")} " +
@@ -493,6 +599,10 @@ namespace SprocketMultiplayer.Core
                 $"stageEvents={s.StageSpawnEventCount} " +
                 $"locator={(s.SpawnLocator != null ? "yes" : "no")} " +
                 $"stageFactories={s.AssemblyStageFactoryCount} " +
+                $"vehicleResources={(s.VehicleResourcesGlobal != null ? "yes" : "no")} " +
+                $"vehiclesMain={(s.VehiclesMainResources != null ? "yes" : "no")} " +
+                $"vehiclesMainActive={s.VehiclesMainCount} " +
+                $"vehiclesMainAll={s.VehiclesMainAllCount} " +
                 $"register={(s.VehicleRegister != null ? "yes" : "no")} " +
                 $"controller={(s.VehicleController != null ? "yes" : "no")}");
         }
@@ -504,7 +614,9 @@ namespace SprocketMultiplayer.Core
                 $"attempt={attempt} " +
                 $"ready={SpawnSummaryLog.YesNo(s.IsReady)} " +
                 $"missing={GetMissingDependencies(s)} " +
+                $"stage={DescribeUnityObject(s.PreferredStageEvent)} " +
                 $"factory={SpawnSummaryLog.YesNo(s.VehicleFactory != null)} " +
+                $"factoryStatic={SpawnSummaryLog.YesNo(s.StaticVehicleFactory != null)} " +
                 $"context={SpawnSummaryLog.YesNo(s.FactoryContextReady)} " +
                 $"defaultContext={SpawnSummaryLog.YesNo(s.DefaultVehicleContext != null)} " +
                 $"techFrame={SpawnSummaryLog.YesNo(s.TechFrame != null)} " +
@@ -512,6 +624,10 @@ namespace SprocketMultiplayer.Core
                 $"stageEvents={s.StageSpawnEventCount} " +
                 $"locator={SpawnSummaryLog.YesNo(s.SpawnLocator != null)} " +
                 $"stageFactories={s.AssemblyStageFactoryCount} " +
+                $"vehicleResources={SpawnSummaryLog.YesNo(s.VehicleResourcesGlobal != null)} " +
+                $"vehiclesMain={SpawnSummaryLog.YesNo(s.VehiclesMainResources != null)} " +
+                $"vehiclesMainActive={s.VehiclesMainCount} " +
+                $"vehiclesMainAll={s.VehiclesMainAllCount} " +
                 $"register={SpawnSummaryLog.YesNo(s.VehicleRegister != null)} " +
                 $"controller={SpawnSummaryLog.YesNo(s.VehicleController != null)}");
         }
@@ -524,6 +640,8 @@ namespace SprocketMultiplayer.Core
             if (s.TechFrame == null) missing.Add("techFrame");
             if (s.OfficialSpawner == null) missing.Add("officialSpawner");
             if (s.AssemblyStageFactoryCount <= 0) missing.Add("stageFactories");
+            if (s.VehicleResourcesGlobal == null) missing.Add("vehicleResources");
+            if (s.VehiclesMainResources == null) missing.Add("vehiclesMain");
             if (s.VehicleRegister == null) missing.Add("register");
             if (s.VehicleController == null) missing.Add("controller");
 
@@ -535,6 +653,7 @@ namespace SprocketMultiplayer.Core
             MelonLogger.Msg($"[SpawnSniffer:detail] phase={phase}");
             LogFactoryDetails(s.VehicleFactory, s.FactoryContext, s.DefaultVehicleContext);
             LogAssemblyResourcesDetails(s.VehicleAssemblyResources, s.AssemblyStageFactories);
+            VehicleRuntimeDiagnostics.LogState("sniffer-" + phase);
             LogStageSpawnDetails(s.StageSpawnEvents);
             LogSpawnerDetails();
             LogSceneComponentCandidates();
@@ -925,6 +1044,7 @@ namespace SprocketMultiplayer.Core
     public class SpawnDependencySnapshot
     {
         public Il2CppSystem.Object VehicleFactory;
+        public IVehicleFactory StaticVehicleFactory;
         public string FactoryType;
         public bool FactoryContextReady;
         public Il2CppSystem.Object FactoryContext;
@@ -933,11 +1053,16 @@ namespace SprocketMultiplayer.Core
         public string TechFrameType;
         public StageVehicleSpawnEvent[] StageSpawnEvents;
         public int StageSpawnEventCount;
+        public StageVehicleSpawnEvent PreferredStageEvent;
         public SpawnLocator SpawnLocator;
         public VehicleSpawner OfficialSpawner;
         public VehicleAssemblyResources VehicleAssemblyResources;
         public Il2CppReferenceArray<IVehicleAssemblyStageFactory> AssemblyStageFactories;
         public int AssemblyStageFactoryCount;
+        public VehicleResources VehicleResourcesGlobal;
+        public int VehiclesMainCount;
+        public int VehiclesMainAllCount;
+        public VehicleResources VehiclesMainResources;
         public IVehicleRegister VehicleRegister;
         public VehicleController VehicleController;
 
@@ -947,6 +1072,8 @@ namespace SprocketMultiplayer.Core
             TechFrame != null &&
             OfficialSpawner != null &&
             AssemblyStageFactoryCount > 0 &&
+            VehicleResourcesGlobal != null &&
+            VehiclesMainResources != null &&
             VehicleRegister != null &&
             VehicleController != null;
     }
@@ -982,6 +1109,903 @@ namespace SprocketMultiplayer.Core
                 .Replace('\r', ' ')
                 .Replace('\n', ' ')
                 .Replace('\t', ' ');
+        }
+    }
+
+    internal static class VehicleRuntimeDiagnostics
+    {
+        private const BindingFlags AnyStatic = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+        private const BindingFlags AnyInstance = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        private static VehiclesMain runtimeVehiclesMain;
+
+        public static VehicleResources GetGlobalVehicleResources()
+        {
+            try
+            {
+                var type = typeof(VehicleResources);
+                var prop = type.GetProperty("Global", AnyStatic);
+                if (prop != null)
+                    return prop.GetValue(null, null) as VehicleResources;
+
+                var getter = type.GetMethod("get_Global", AnyStatic);
+                if (getter != null)
+                    return getter.Invoke(null, null) as VehicleResources;
+
+                var field = type.GetField("global", AnyStatic) ?? type.GetField("Global", AnyStatic);
+                return field?.GetValue(null) as VehicleResources;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[VehicleRuntime] VehicleResources.Global read failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        public static IVehicleFactory GetStaticVehicleFactory()
+        {
+            try
+            {
+                var field = typeof(IVehicleFactory).GetField("Factory", AnyStatic);
+                var direct = field?.GetValue(null) as IVehicleFactory;
+                if (direct != null)
+                    return direct;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[VehicleRuntime] IVehicleFactory.Factory read failed: {ex.Message}");
+            }
+
+            var factory = GetVehicleFactoriesInstance();
+            return factory != null
+                ? (factory.TryCast<IVehicleFactory>() ?? new Il2CppSystem.Object(factory.Pointer).TryCast<IVehicleFactory>())
+                : null;
+        }
+
+        public static bool EnsureStaticVehicleFactory(out string source, out string detail)
+        {
+            source = "existing";
+            detail = "";
+
+            IVehicleFactory existing = GetStaticVehicleFactory();
+            if (existing != null)
+            {
+                detail = DescribeObject(existing);
+                return true;
+            }
+
+            try
+            {
+                var register = typeof(VehicleFactories).GetMethod("Register", AnyStatic);
+                register?.Invoke(null, null);
+            }
+            catch (Exception ex)
+            {
+                source = "VehicleFactories.Register";
+                detail = ex.Message;
+            }
+
+            try
+            {
+                var factory = GetVehicleFactoriesInstance();
+                if (factory == null)
+                {
+                    source = "none";
+                    detail = "VehicleFactories.instance null";
+                    return false;
+                }
+
+                existing = GetStaticVehicleFactory();
+                if (existing != null)
+                {
+                    source = "VehicleFactories.instance";
+                    detail = DescribeObject(existing);
+                    return true;
+                }
+
+                var field = typeof(IVehicleFactory).GetField("Factory", AnyStatic);
+                if (field == null)
+                    return true;
+
+                field.SetValue(null, factory);
+                existing = GetStaticVehicleFactory();
+                bool ok = existing != null;
+                source = "VehicleFactories.instance";
+                detail = ok ? DescribeObject(existing) : "field still null after set";
+                return ok;
+            }
+            catch (Exception ex)
+            {
+                source = "VehicleFactories.instance";
+                detail = ex.Message;
+                return false;
+            }
+        }
+
+        public static int CountVehiclesMain()
+        {
+            try
+            {
+                var mains = Object.FindObjectsOfType<VehiclesMain>();
+                return mains?.Length ?? 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        public static int CountVehiclesMainAll()
+        {
+            try
+            {
+                var mains = UnityEngine.Resources.FindObjectsOfTypeAll<VehiclesMain>();
+                return mains?.Length ?? 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        public static VehicleResources GetVehiclesMainResources()
+        {
+            try
+            {
+                var main = GetVehiclesMainInstance();
+                if (main == null)
+                    return null;
+
+                return GetVehiclesMainResources(main);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[VehicleRuntime] VehiclesMain.Resources read failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        public static bool EnsureVehiclesMainResources(out string source, out string detail)
+        {
+            source = "none";
+            detail = "";
+
+            VehiclesMain main = GetVehiclesMainInstance();
+            VehicleResources existing = main != null ? GetVehiclesMainResources(main) : null;
+            if (existing != null)
+            {
+                source = "VehiclesMain.Instance.resources";
+                detail = Describe(existing);
+                return true;
+            }
+
+            VehiclesMain candidateMain = FindVehiclesMainWithResources(out VehicleResources candidateResources);
+            if (main == null && candidateMain != null)
+            {
+                SetVehiclesMainInstance(candidateMain);
+                main = GetVehiclesMainInstance();
+                existing = main != null ? GetVehiclesMainResources(main) : null;
+                if (existing != null)
+                {
+                    source = "VehiclesMain.FindObjectsOfTypeAll";
+                    detail = Describe(existing);
+                    return true;
+                }
+            }
+
+            if (candidateResources == null)
+                candidateResources = FindVehicleResourcesCandidate(out source, out detail);
+
+            if (main == null)
+            {
+                var assemblyResources = FindVehicleAssemblyResourcesCandidate(out string assemblySource, out string assemblyDetail);
+                if (candidateResources != null &&
+                    assemblyResources != null &&
+                    TryCreateRuntimeVehiclesMain(candidateResources, assemblyResources, out main, out string createDetail))
+                {
+                    SetVehiclesMainInstance(main);
+                    existing = GetVehiclesMainResources(main);
+                    if (existing != null)
+                    {
+                        source = "VehiclesMain.runtime";
+                        detail = $"{Describe(existing)} assembly={assemblySource} create={createDetail}";
+                        return true;
+                    }
+                }
+
+                detail = candidateResources == null
+                    ? "no VehiclesMain instance and no VehicleResources candidate"
+                    : "no VehiclesMain instance";
+                return false;
+            }
+
+            if (candidateResources == null)
+                return false;
+
+            if (!TrySetVehiclesMainResources(main, candidateResources, out detail))
+            {
+                source = "VehiclesMain.resources.injected";
+                return false;
+            }
+
+            SetVehiclesMainInstance(main);
+            EnsureVehicleResourcesGlobal(out _, out _);
+
+            VehicleResources confirmed = GetVehiclesMainResources();
+            bool ok = confirmed != null;
+            source = "VehiclesMain.resources.injected";
+            detail = ok ? Describe(confirmed) : "resources still null after injection";
+            return ok;
+        }
+
+        public static bool EnsureVehicleResourcesGlobal(out string source, out string detail)
+        {
+            source = "existing";
+            detail = "";
+
+            VehicleResources current = GetGlobalVehicleResources();
+            if (current != null)
+            {
+                detail = Describe(current);
+                return true;
+            }
+
+            VehicleResources candidate = FindVehicleResourcesCandidate(out source, out detail);
+            if (candidate == null)
+                return false;
+
+            try
+            {
+                var setter = typeof(VehicleResources).GetMethod("SetInstance", AnyStatic);
+                if (setter == null)
+                {
+                    detail = "SetInstance not found";
+                    return false;
+                }
+
+                setter.Invoke(null, new object[] { candidate });
+                current = GetGlobalVehicleResources();
+                bool ok = current != null;
+                detail = ok ? Describe(current) : "SetInstance returned but global is still null";
+                return ok;
+            }
+            catch (Exception ex)
+            {
+                detail = ex.Message;
+                return false;
+            }
+        }
+
+        public static void LogState(string phase)
+        {
+            bool factoryReady = EnsureStaticVehicleFactory(out string factorySource, out string factoryDetail);
+            bool mainReady = EnsureVehiclesMainResources(out string mainSource, out string mainDetail);
+            bool repaired = EnsureVehicleResourcesGlobal(out string source, out string detail);
+            SpawnSummaryLog.Info(
+                "vehicleRuntime " +
+                $"phase={phase} " +
+                $"factoryStatic={SpawnSummaryLog.YesNo(GetStaticVehicleFactory() != null)} " +
+                $"factoryRepair={SpawnSummaryLog.YesNo(factoryReady)} " +
+                $"factorySource={factorySource} " +
+                $"factoryDetail={factoryDetail} " +
+                $"vehiclesMain={SpawnSummaryLog.YesNo(GetVehiclesMainResources() != null)} " +
+                $"vehiclesMainActive={CountVehiclesMain()} " +
+                $"vehiclesMainAll={CountVehiclesMainAll()} " +
+                $"resourcesGlobal={SpawnSummaryLog.YesNo(GetGlobalVehicleResources() != null)} " +
+                $"mainRepair={SpawnSummaryLog.YesNo(mainReady)} " +
+                $"mainSource={mainSource} " +
+                $"mainDetail={mainDetail} " +
+                $"repair={SpawnSummaryLog.YesNo(repaired)} " +
+                $"source={source} " +
+                $"detail={detail}");
+        }
+
+        private static VehicleResources FindVehicleResourcesCandidate(out string source, out string detail)
+        {
+            source = "none";
+            detail = "no candidate";
+
+            try
+            {
+                var mains = Object.FindObjectsOfType<VehiclesMain>();
+                if (mains != null)
+                {
+                    foreach (var main in mains)
+                    {
+                        if (main == null)
+                            continue;
+
+                        var resources = GetVehiclesMainResources(main);
+                        if (resources != null)
+                        {
+                            source = "VehiclesMain.resources";
+                            detail = Describe(resources);
+                            return resources;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                detail = "VehiclesMain read failed: " + ex.Message;
+            }
+
+            try
+            {
+                var resources = UnityEngine.Resources.FindObjectsOfTypeAll<VehicleResources>();
+                if (resources != null && resources.Length > 0)
+                {
+                    source = "Resources.FindObjectsOfTypeAll";
+                    detail = Describe(resources[0]);
+                    return resources[0];
+                }
+            }
+            catch (Exception ex)
+            {
+                detail = "Resources scan failed: " + ex.Message;
+            }
+
+            return null;
+        }
+
+        private static VehicleAssemblyResources FindVehicleAssemblyResourcesCandidate(out string source, out string detail)
+        {
+            source = "none";
+            detail = "no candidate";
+
+            try
+            {
+                if (VehicleAssemblyResources.Default != null)
+                {
+                    source = "VehicleAssemblyResources.Default";
+                    detail = VehicleAssemblyResources.Default.name;
+                    return VehicleAssemblyResources.Default;
+                }
+            }
+            catch (Exception ex)
+            {
+                detail = "default read failed: " + ex.Message;
+            }
+
+            try
+            {
+                var resources = UnityEngine.Resources.FindObjectsOfTypeAll<VehicleAssemblyResources>();
+                if (resources != null)
+                {
+                    foreach (var candidate in resources)
+                    {
+                        if (candidate == null)
+                            continue;
+
+                        try
+                        {
+                            var factories = candidate.GetFactories();
+                            if (factories != null && factories.Length > 0)
+                            {
+                                source = "Resources.FindObjectsOfTypeAll";
+                                detail = candidate.name;
+                                return candidate;
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                detail = "assembly scan failed: " + ex.Message;
+            }
+
+            return null;
+        }
+
+        private static VehiclesMain GetVehiclesMainInstance()
+        {
+            if (runtimeVehiclesMain != null && runtimeVehiclesMain.Pointer != IntPtr.Zero)
+                return runtimeVehiclesMain;
+
+            try
+            {
+                var prop = typeof(VehiclesMain).GetProperty("Instance", AnyStatic);
+                if (prop != null)
+                {
+                    var instance = prop.GetValue(null, null) as VehiclesMain;
+                    if (instance != null)
+                        return instance;
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var found = Object.FindObjectOfType<VehiclesMain>();
+                if (found != null)
+                    return found;
+
+                var all = UnityEngine.Resources.FindObjectsOfTypeAll<VehiclesMain>();
+                if (all != null)
+                {
+                    foreach (var main in all)
+                    {
+                        if (main != null && main.Pointer != IntPtr.Zero && GetVehiclesMainResources(main) != null)
+                            return main;
+                    }
+                }
+
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void SetVehiclesMainInstance(VehiclesMain main)
+        {
+            if (main == null)
+                return;
+
+            try
+            {
+                Type current = typeof(VehiclesMain);
+                while (current != null)
+                {
+                    var field = current.GetField("instance", AnyStatic);
+                    if (field != null && field.FieldType.IsAssignableFrom(typeof(VehiclesMain)))
+                    {
+                        field.SetValue(null, main);
+                        return;
+                    }
+
+                    current = current.BaseType;
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[VehicleRuntime] VehiclesMain instance injection failed: {ex.Message}");
+            }
+        }
+
+        private static VehiclesMain FindVehiclesMainWithResources(out VehicleResources resources)
+        {
+            resources = null;
+
+            try
+            {
+                var mains = UnityEngine.Resources.FindObjectsOfTypeAll<VehiclesMain>();
+                if (mains == null)
+                    return null;
+
+                foreach (var main in mains)
+                {
+                    if (main == null)
+                        continue;
+
+                    resources = GetVehiclesMainResources(main);
+                    if (resources != null)
+                        return main;
+                }
+            }
+            catch
+            {
+            }
+
+            return null;
+        }
+
+        private static VehicleResources GetVehiclesMainResources(VehiclesMain main)
+        {
+            if (main == null)
+                return null;
+
+            try
+            {
+                var prop = typeof(VehiclesMain).GetProperty("Resources", AnyInstance);
+                if (prop != null)
+                {
+                    var value = prop.GetValue(main, null) as VehicleResources;
+                    if (value != null)
+                        return value;
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var field = typeof(VehiclesMain).GetField("resources", AnyInstance);
+                var value = field?.GetValue(main) as VehicleResources;
+                if (value != null)
+                    return value;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var obj = main.Cast<Il2CppSystem.Object>();
+                var flags = Il2CppSystem.Reflection.BindingFlags.Public |
+                            Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                            Il2CppSystem.Reflection.BindingFlags.Instance;
+
+                var type = obj.GetIl2CppType();
+                var field = type.GetField("resources", flags) ?? type.GetField("Resources", flags);
+                var value = field?.GetValue(obj);
+                return value?.TryCast<VehicleResources>();
+            }
+            catch
+            {
+            }
+
+            return ReadIl2CppObjectField<VehicleResources>(main, 0x20);
+        }
+
+        private static VehicleAssemblyResources GetVehiclesMainAssemblyResources(VehiclesMain main)
+        {
+            if (main == null)
+                return null;
+
+            try
+            {
+                var field = typeof(VehiclesMain).GetField("defaultAssemblyResources", AnyInstance);
+                var value = field?.GetValue(main) as VehicleAssemblyResources;
+                if (value != null)
+                    return value;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var obj = main.Cast<Il2CppSystem.Object>();
+                var flags = Il2CppSystem.Reflection.BindingFlags.Public |
+                            Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                            Il2CppSystem.Reflection.BindingFlags.Instance;
+                var field = obj.GetIl2CppType().GetField("defaultAssemblyResources", flags);
+                var value = field?.GetValue(obj);
+                var cast = value?.TryCast<VehicleAssemblyResources>();
+                if (cast != null)
+                    return cast;
+            }
+            catch
+            {
+            }
+
+            return ReadIl2CppObjectField<VehicleAssemblyResources>(main, 0x28);
+        }
+
+        private static bool TrySetVehiclesMainResources(VehiclesMain main, VehicleResources resources, out string detail)
+        {
+            detail = "";
+            if (main == null || resources == null)
+            {
+                detail = "main/resources null";
+                return false;
+            }
+
+            try
+            {
+                var resourcesField = typeof(VehiclesMain).GetField("resources", AnyInstance);
+                if (resourcesField != null)
+                {
+                    resourcesField.SetValue(main, resources);
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                detail = "managed field set failed: " + ex.Message;
+            }
+
+            try
+            {
+                var obj = main.Cast<Il2CppSystem.Object>();
+                var value = resources.Cast<Il2CppSystem.Object>();
+                var flags = Il2CppSystem.Reflection.BindingFlags.Public |
+                            Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                            Il2CppSystem.Reflection.BindingFlags.Instance;
+
+                var type = obj.GetIl2CppType();
+                var field = type.GetField("resources", flags) ?? type.GetField("Resources", flags);
+                if (field == null)
+                {
+                    detail = "VehiclesMain.resources il2cpp field not found fields=" + DescribeIl2CppFields(type);
+                    return false;
+                }
+
+                field.SetValue(obj, value);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                detail = "il2cpp field set failed: " + ex.Message;
+            }
+
+            if (WriteIl2CppObjectField(main, 0x20, resources))
+            {
+                detail = "native offset 0x20";
+                return true;
+            }
+
+            if (string.IsNullOrEmpty(detail))
+                detail = "all field set methods failed";
+            return false;
+        }
+
+        private static bool TrySetVehiclesMainAssemblyResources(VehiclesMain main, VehicleAssemblyResources resources, out string detail)
+        {
+            detail = "";
+            if (main == null || resources == null)
+            {
+                detail = "main/resources null";
+                return false;
+            }
+
+            try
+            {
+                var field = typeof(VehiclesMain).GetField("defaultAssemblyResources", AnyInstance);
+                if (field != null)
+                {
+                    field.SetValue(main, resources);
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                detail = "managed field set failed: " + ex.Message;
+            }
+
+            try
+            {
+                var obj = main.Cast<Il2CppSystem.Object>();
+                var value = resources.Cast<Il2CppSystem.Object>();
+                var flags = Il2CppSystem.Reflection.BindingFlags.Public |
+                            Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                            Il2CppSystem.Reflection.BindingFlags.Instance;
+                var field = obj.GetIl2CppType().GetField("defaultAssemblyResources", flags);
+                if (field != null)
+                {
+                    field.SetValue(obj, value);
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                detail = "il2cpp field set failed: " + ex.Message;
+            }
+
+            if (WriteIl2CppObjectField(main, 0x28, resources))
+            {
+                detail = "native offset 0x28";
+                return true;
+            }
+
+            if (string.IsNullOrEmpty(detail))
+                detail = "all field set methods failed";
+            return false;
+        }
+
+        private static bool TryCreateRuntimeVehiclesMain(
+            VehicleResources resources,
+            VehicleAssemblyResources assemblyResources,
+            out VehiclesMain main,
+            out string detail)
+        {
+            main = null;
+            detail = "";
+
+            try
+            {
+                var go = new GameObject("__MP_VehiclesMain_Runtime");
+                go.hideFlags = HideFlags.HideAndDontSave;
+                go.SetActive(false);
+
+                main = go.AddComponent<VehiclesMain>();
+                if (main == null)
+                {
+                    detail = "AddComponent returned null";
+                    return false;
+                }
+
+                runtimeVehiclesMain = main;
+
+                TrySetVehiclesMainResources(main, resources, out string resDetail);
+                TrySetVehiclesMainAssemblyResources(main, assemblyResources, out string assemblyDetail);
+                SetVehicleAssemblyResourcesDefault(assemblyResources);
+                EnsureVehicleResourcesGlobal(out _, out _);
+                SetVehiclesMainInstance(main);
+
+                go.SetActive(true);
+
+                if (GetVehiclesMainResources(main) == null || GetVehiclesMainAssemblyResources(main) == null)
+                {
+                    TrySetVehiclesMainResources(main, resources, out resDetail);
+                    TrySetVehiclesMainAssemblyResources(main, assemblyResources, out assemblyDetail);
+                }
+
+                if (TryInvokeVehiclesMainOnAwake(main, out string awakeDetail))
+                    detail = $"res={resDetail}; assembly={assemblyDetail}; awake={awakeDetail}";
+                else
+                    detail = $"res={resDetail}; assembly={assemblyDetail}; awakeSkipped={awakeDetail}";
+
+                return GetVehiclesMainResources(main) != null &&
+                       GetVehiclesMainAssemblyResources(main) != null;
+            }
+            catch (Exception ex)
+            {
+                detail = ex.Message;
+                return false;
+            }
+        }
+
+        private static bool TryInvokeVehiclesMainOnAwake(VehiclesMain main, out string detail)
+        {
+            detail = "";
+            if (main == null)
+            {
+                detail = "main null";
+                return false;
+            }
+
+            try
+            {
+                var method = typeof(VehiclesMain).GetMethod("OnAwake", AnyInstance);
+                if (method == null)
+                {
+                    detail = "OnAwake method not found";
+                    return false;
+                }
+
+                method.Invoke(main, null);
+                detail = "invoked";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                detail = ex.Message;
+                return false;
+            }
+        }
+
+        private static void SetVehicleAssemblyResourcesDefault(VehicleAssemblyResources resources)
+        {
+            if (resources == null)
+                return;
+
+            try
+            {
+                var field = typeof(VehicleAssemblyResources).GetField("Default", AnyStatic);
+                field?.SetValue(null, resources);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[VehicleRuntime] VehicleAssemblyResources.Default set failed: {ex.Message}");
+            }
+        }
+
+        private static VehicleFactories GetVehicleFactoriesInstance()
+        {
+            try
+            {
+                var prop = typeof(VehicleFactories).GetProperty("instance", AnyStatic) ??
+                           typeof(VehicleFactories).GetProperty("Instance", AnyStatic);
+                var value = prop?.GetValue(null, null) as VehicleFactories;
+                if (value != null)
+                    return value;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var field = typeof(VehicleFactories).GetField("instance", AnyStatic) ??
+                            typeof(VehicleFactories).GetField("Instance", AnyStatic);
+                return field?.GetValue(null) as VehicleFactories;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static T ReadIl2CppObjectField<T>(Il2CppObjectBase owner, int offset) where T : Il2CppObjectBase
+        {
+            if (owner == null || owner.Pointer == IntPtr.Zero)
+                return null;
+
+            try
+            {
+                IntPtr ptr = Marshal.ReadIntPtr(IntPtr.Add(owner.Pointer, offset));
+                if (ptr == IntPtr.Zero)
+                    return null;
+
+                return new Il2CppSystem.Object(ptr).TryCast<T>();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static bool WriteIl2CppObjectField(Il2CppObjectBase owner, int offset, Il2CppObjectBase value)
+        {
+            if (owner == null || value == null || owner.Pointer == IntPtr.Zero || value.Pointer == IntPtr.Zero)
+                return false;
+
+            try
+            {
+                Marshal.WriteIntPtr(IntPtr.Add(owner.Pointer, offset), value.Pointer);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string DescribeIl2CppFields(Il2CppSystem.Type type)
+        {
+            if (type == null)
+                return "noType";
+
+            try
+            {
+                var flags = Il2CppSystem.Reflection.BindingFlags.Public |
+                            Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                            Il2CppSystem.Reflection.BindingFlags.Instance |
+                            Il2CppSystem.Reflection.BindingFlags.Static;
+
+                var names = new List<string>();
+                foreach (var field in type.GetFields(flags))
+                {
+                    if (names.Count >= 12)
+                        break;
+
+                    names.Add(field.Name + ":" + (field.FieldType?.FullName ?? "?"));
+                }
+
+                return names.Count > 0 ? string.Join(",", names) : "none";
+            }
+            catch (Exception ex)
+            {
+                return "fieldListFailed:" + ex.Message;
+            }
+        }
+
+        private static string Describe(VehicleResources resources)
+        {
+            if (resources == null)
+                return "null";
+
+            string name = "";
+            try { name = resources.name; } catch { }
+            return string.IsNullOrEmpty(name) ? resources.GetType().FullName : name;
+        }
+
+        private static string DescribeObject(object value)
+        {
+            if (value == null)
+                return "null";
+
+            try
+            {
+                if (value is Il2CppObjectBase obj)
+                    return obj.Pointer != IntPtr.Zero
+                        ? (new Il2CppSystem.Object(obj.Pointer).GetIl2CppType()?.FullName ?? obj.GetType().FullName)
+                        : obj.GetType().FullName;
+            }
+            catch
+            {
+            }
+
+            return value.GetType().FullName;
         }
     }
 }

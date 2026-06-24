@@ -3,7 +3,6 @@ using System.Collections;
 using System.Collections.Generic;
 using MelonLoader;
 using UnityEngine;
-using SprocketMultiplayer.Patches;
 using Il2CppSprocket.Vehicles;
 using Object = UnityEngine.Object;
 using Random = UnityEngine.Random;
@@ -21,6 +20,7 @@ namespace SprocketMultiplayer.Core
 
         private bool sceneReady;
         private bool spawnStarted;
+        private bool sceneLoadTriggered;
 
         // =====================================================================
         // Tank selection
@@ -33,12 +33,22 @@ namespace SprocketMultiplayer.Core
             MelonLogger.Msg($"[MP] SetPlayerTank: {nickname} -> {tankName}");
             PlayerChosenTanks[nickname] = tankName;
 
-            if (Lobby.Panel != null)
-                Lobby.SetPlayerTank(nickname, tankName);
+            if (LobbyManager.Instance.Players.TryGetValue(nickname, out var player))
+                player.TankName = tankName;
         }
 
         public string GetPlayerTank(string nickname)
         {
+            if (LobbyManager.Instance.Players.TryGetValue(nickname, out var lobbyPlayer) &&
+                !string.IsNullOrEmpty(lobbyPlayer.TankName) &&
+                lobbyPlayer.TankName != "None")
+            {
+                if (VehicleSpawnHelper.HasTank(lobbyPlayer.TankName))
+                    return lobbyPlayer.TankName;
+
+                MelonLogger.Warning($"[MP] Lobby player {nickname} has invalid tank '{lobbyPlayer.TankName}', falling back to default.");
+            }
+
             if (PlayerChosenTanks.TryGetValue(nickname, out var tank) && !string.IsNullOrEmpty(tank))
             {
                 if (VehicleSpawnHelper.HasTank(tank))
@@ -57,9 +67,25 @@ namespace SprocketMultiplayer.Core
 
         public void OnSceneLoaded()
         {
+            if (sceneLoadTriggered)
+            {
+                SpawnSummaryLog.Warn("sceneStart ignored reason=alreadyTriggered");
+                return;
+            }
+
+            sceneLoadTriggered = true;
             SpawnSummaryLog.Info("sceneStart manager=OnSceneLoaded");
             MelonLogger.Msg("[MP] OnSceneLoaded — starting delayed init...");
             MelonCoroutines.Start(DelayedSceneInit());
+        }
+
+        public void PrepareForMultiplayerSceneLoad()
+        {
+            sceneReady = false;
+            spawnStarted = false;
+            sceneLoadTriggered = false;
+            SpawnedVehicles.Clear();
+            SpawnSummaryLog.Info("sceneStart state reset");
         }
 
         private IEnumerator DelayedSceneInit()
@@ -148,9 +174,9 @@ namespace SprocketMultiplayer.Core
             if (!string.IsNullOrEmpty(NetworkManager.Instance.HostNickname))
                 players.Add(NetworkManager.Instance.HostNickname);
 
-            foreach (var kv in Lobby.Players)
-                if (!players.Contains(kv.Key))
-                    players.Add(kv.Key);
+            foreach (var player in LobbyManager.Instance.Players.Values)
+                if (!string.IsNullOrEmpty(player.Name) && !players.Contains(player.Name))
+                    players.Add(player.Name);
 
             MelonLogger.Msg($"[MP] Spawning for {players.Count} player(s)...");
             SpawnSummaryLog.Info($"queue start players={players.Count} names={string.Join(",", players.ToArray())}");
@@ -191,10 +217,10 @@ namespace SprocketMultiplayer.Core
                     if (nickname == NetworkManager.Instance.LocalNickname)
                     {
                         MelonLogger.Msg($"[MP] Assigning control to host ({nickname}).");
-                        VehicleSpawnHelper.AssignVehicleControl(gateway);
+                        yield return MelonCoroutines.Start(VehicleSpawnHelper.AssignVehicleControlWhenReady(gateway));
                     }
 
-                    NetworkManager.Instance?.Send($"SPAWN:{nickname}:{tank}");
+                    NetworkManager.Instance?.SendEnvelope("SPAWN", nickname, tank);
                 }
                 else
                 {
@@ -264,8 +290,7 @@ namespace SprocketMultiplayer.Core
             if (NetworkManager.Instance != null && nickname == NetworkManager.Instance.LocalNickname)
             {
                 MelonLogger.Msg("[MP] Assigning control to local client player...");
-                yield return new WaitForSeconds(0.25f);
-                VehicleSpawnHelper.AssignVehicleControl(gateway);
+                yield return MelonCoroutines.Start(VehicleSpawnHelper.AssignVehicleControlWhenReady(gateway));
             }
         }
 
@@ -296,6 +321,7 @@ namespace SprocketMultiplayer.Core
             PlayerChosenTanks.Clear();
             sceneReady   = false;
             spawnStarted = false;
+            sceneLoadTriggered = false;
 
             MelonLogger.Msg("[MP] Reset complete.");
         }

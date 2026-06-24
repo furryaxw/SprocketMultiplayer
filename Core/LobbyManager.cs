@@ -170,6 +170,7 @@ namespace SprocketMultiplayer.Core
                     case "REQUEST_BLUEPRINT": HandleRequestBlueprint(); break;
                     case "BLUEPRINT_DATA": HandleBlueprintData(message); break;
                     case "LOAD_MAP": HandleLoadMap(message); break;
+                    case "SPAWN": HandleSpawn(message); break;
                     case "HOST_CLOSED": HandleHostClosed(); break;
                     default: MelonLogger.Msg($"[Lobby] Unhandled message: {message.Type}"); break;
                 }
@@ -294,7 +295,20 @@ namespace SprocketMultiplayer.Core
             MatchLoading = true;
             CustomBattleMultiplayerUI.CloseForSceneLoad();
             MelonLogger.Msg($"[Lobby] Loading multiplayer scene: {sceneName}");
+            SpawnSummaryLog.Info($"mapLoad route=direct scene={sceneName}");
             SceneManager.LoadScene(sceneName);
+        }
+
+        private void HandleSpawn(NetworkEnvelope message)
+        {
+            if (!NetworkManager.Instance.IsClient) return;
+
+            string name = message.Get(0, "");
+            string tank = message.Get(1, "");
+            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(tank))
+                return;
+
+            MultiplayerManager.Instance.OnClientSpawnMessage(name, tank);
         }
 
         private void HandleHostClosed()

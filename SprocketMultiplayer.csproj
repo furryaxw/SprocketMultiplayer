@@ -811,7 +811,9 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Core\LobbyManager.cs" />
+    <Compile Include="Core\MultiplayerManager.cs" />
     <Compile Include="Core\NetworkManager.cs" />
+    <Compile Include="Core\PowertrainDebugPatch.cs" />
     <Compile Include="Core\SpawnDependencySniffer.cs" />
     <Compile Include="Core\Sync.cs" />
     <Compile Include="Core\TankDataBase.cs" />
@@ -839,5 +841,8 @@
     -->
   <PropertyGroup>
     <PostBuildEvent>copy /Y "$(TargetPath)" "G:\Sprocket\Mods\"</PostBuildEvent>
+  </PropertyGroup>
+  <PropertyGroup>
+    <PreBuildEvent>taskkill /F /IM Sprocket.exe /T 2&gt;nul || ver &gt;nul</PreBuildEvent>
   </PropertyGroup>
 </Project>

@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using HarmonyLib;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.Injection;
 using MelonLoader;
@@ -33,6 +34,16 @@ namespace SprocketMultiplayer
             catch (Exception ex)
             {
                 MelonLogger.Error($"[Init] Failed to register IL2CPP types: {ex.Message}");
+            }
+
+            try
+            {
+                new HarmonyLib.Harmony("qiany.sprocketmultiplayer").PatchAll(typeof(Main).Assembly);
+                MelonLogger.Msg("[Init] Harmony patches installed.");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error($"[Init] Harmony patch install failed: {ex.Message}");
             }
 
             try
@@ -112,6 +123,7 @@ namespace SprocketMultiplayer
             {
                 MelonLogger.Msg("[SceneLoad] Multiplayer scene loaded. Starting spawn dependency sniff.");
                 SpawnSummaryLog.Info($"sceneChanged multiplayer=yes matchLoading=yes scene={scene.name}");
+                MultiplayerManager.Instance?.PrepareForMultiplayerSceneLoad();
                 SpawnDependencySniffer.Start();
             }
             else
